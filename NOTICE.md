@@ -1,24 +1,52 @@
-# Third-party components
+# Сторонние компоненты
 
-VPN Health Monitor itself is MIT-licensed (see [LICENSE](LICENSE)).
+VPN Health Monitor распространяется под лицензией MIT — см. [LICENSE](LICENSE).
 
-The shipped application (`VpnHealthMonitor.csproj`) has **zero NuGet
-dependencies** — it builds against the .NET 8 SDK and the Windows Desktop
-(WPF) runtime only. Nothing beyond the .NET/Windows Desktop Runtime license
-terms applies to a built binary.
+## В исходниках: ни одного пакета NuGet
 
-## Dev-only — not part of the shipped binary
+Приложение (`VpnHealthMonitor.csproj`) собирается на .NET 8 SDK и Windows Desktop
+(WPF/WinForms) без единой сторонней зависимости — список `<PackageReference>` в
+проекте пуст.
 
-The test project `VpnHealthMonitor.Tests.csproj` (xUnit) references three
-packages. They run at test time only and are never bundled into the
-application's output:
+## В установщике: рантайм .NET 8 внутри
 
-| Component | License |
+Установщик собирается как **self-contained**: рантайм .NET 8 и библиотеки Windows
+Desktop (WPF, WinForms) упакованы внутрь `VpnHealthMonitor.exe`, поэтому мы их
+распространяем, а не просто используем.
+
+| Компонент | Правообладатель | Лицензия |
+|---|---|---|
+| [.NET Runtime](https://github.com/dotnet/runtime) | Microsoft | MIT |
+| [Windows Desktop Runtime (WPF, WinForms)](https://github.com/dotnet/wpf) | Microsoft | MIT |
+
+Self-contained-распространение прямо разрешено условиями .NET. Компонентов под GPL
+или LGPL в поставке нет — состав проверялся по собранному файлу, а не по списку
+зависимостей: поиск маркеров `libx264`, `libx265`, `avcodec`, `ffmpeg`, `libmysql`,
+`--enable-gpl` и текста GNU General Public License по байтам `VpnHealthMonitor.exe`
+даёт ноль текстовых вхождений.
+
+Установщик собран [Inno Setup 6](https://jrsoftware.org/isinfo.php) (Jordan Russell,
+лицензия Inno Setup — свободное использование, включая коммерческое). Код Inno Setup
+входит в `VpnHealthMonitor-Setup-*.exe`, но не в само приложение.
+
+## Только для разработки — в поставку не входит
+
+Тест-проект `VpnHealthMonitor.Tests.csproj` (xUnit) подключает три пакета. Они
+работают только при запуске тестов и в сборку приложения не попадают:
+
+| Компонент | Лицензия |
 |---|---|
 | [xunit](https://github.com/xunit/xunit) | MIT |
 | [xunit.runner.visualstudio](https://github.com/xunit/visualstudio.xunit) | MIT |
 | [Microsoft.NET.Test.Sdk](https://github.com/microsoft/vstest) | MIT |
 
-If a future change adds a runtime NuGet dependency to the main project, this
-file must be updated to match — check `VpnHealthMonitor.csproj`'s
-`<PackageReference>` entries against this table before publishing a release.
+## Графика
+
+Иконка приложения (`VpnHealthMonitor/Heart.ico`) отрисована из примитивов скриптом
+[`tools/make-icon.ps1`](tools/make-icon.ps1) — сторонней графики в проекте нет.
+
+---
+
+Если в основной проект добавится рантайм-зависимость, этот файл нужно обновить:
+перед выпуском релиза сверяйте `<PackageReference>` в `VpnHealthMonitor.csproj` и
+состав `publish\win-x64\` с таблицами выше. Устаревший NOTICE хуже отсутствующего.
