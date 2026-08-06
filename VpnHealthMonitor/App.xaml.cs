@@ -1,4 +1,6 @@
+using System.IO;
 using System.Windows;
+using VpnHealthMonitor.Services;
 
 namespace VpnHealthMonitor;
 
@@ -10,6 +12,8 @@ public partial class App : System.Windows.Application
 
         try
         {
+            ShowFirstRunScreenIfNeeded();
+
             var window = new MainWindow();
             MainWindow = window;
             window.Show();
@@ -23,5 +27,22 @@ public partial class App : System.Windows.Application
                 MessageBoxImage.Error);
             Shutdown(1);
         }
+    }
+
+    /// <summary>
+    /// Показывает <see cref="FirstRunWindow"/> один раз, до первого запроса UAC, и пишет маркер вне
+    /// зависимости от того, как окно закрыто (кнопка или Esc) — это информационный экран, не gate.
+    /// </summary>
+    private static void ShowFirstRunScreenIfNeeded()
+    {
+        if (File.Exists(AppPaths.FirstRunMarkerPath))
+        {
+            return;
+        }
+
+        new FirstRunWindow().ShowDialog();
+
+        AppPaths.EnsureBaseDirectories();
+        File.WriteAllText(AppPaths.FirstRunMarkerPath, DateTimeOffset.UtcNow.ToString("O"));
     }
 }

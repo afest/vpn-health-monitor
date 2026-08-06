@@ -11,6 +11,10 @@ public static class AppPaths
 
     public static string DefaultLogsFolder => Path.Combine(AppDataFolder, "logs");
 
+    /// <summary>Marker file: экран первого запуска (T-334) показан. Отдельный файл, а не поле в AppSettings —
+    /// первый запуск не связан с настройками мониторинга и не должен проходить через их normalize/reset.</summary>
+    public static string FirstRunMarkerPath => Path.Combine(AppDataFolder, "firstrun.ok");
+
     public static void EnsureBaseDirectories()
     {
         Directory.CreateDirectory(AppDataFolder);

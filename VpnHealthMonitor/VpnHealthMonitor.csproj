@@ -8,6 +8,8 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Heart.ico</ApplicationIcon>
+    <!-- Держать в паре с MyAppVersion в installer\VpnHealthMonitor.iss (T-334) -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

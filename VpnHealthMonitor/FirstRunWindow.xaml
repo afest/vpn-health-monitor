@@ -1,0 +1,52 @@
+<Window x:Class="VpnHealthMonitor.FirstRunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="VPN Health Monitor — что это и зачем права администратора"
+        Width="560" Height="520"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Первый запуск" FontSize="18" FontWeight="Bold" Margin="0,0,0,12" />
+
+        <StackPanel Grid.Row="1">
+            <TextBlock TextWrapping="Wrap" FontSize="13" Margin="0,0,0,10">
+                Приложение умеет закрывать выбранным программам прямой выход в интернет, если их не прикрывает VPN
+                (kill switch на вкладке «Защищённые приложения»). Для этого оно меняет правила Windows Firewall —
+                и Windows один раз спросит подтверждение (UAC), но только когда ты сам нажмёшь «Применить правила»
+                или «Отключить защиту». Без этого действия ни одно правило не создаётся.
+            </TextBlock>
+
+            <Border Background="#FFF6E6" BorderBrush="#E0C580" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,10">
+                <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#5B4A20">
+                    <Run FontWeight="SemiBold" Text="Защита сделана «закрыто по умолчанию»:" />
+                    <Run Text="если VPN отключится или упадёт, защищённая программа теряет прямой выход, а не наоборот. Так и задумано — в этом весь смысл kill switch." />
+                </TextBlock>
+            </Border>
+
+            <TextBlock TextWrapping="Wrap" FontSize="13" Margin="0,0,0,10">
+                <Run FontWeight="SemiBold" Text="Если после включения защиты пропал интернет:" />
+                <LineBreak />
+                <Run Text="кнопка «Отключить защиту» на вкладке «Защищённые приложения» снимает все правила разом. Если само приложение не открывается — рядом с exe лежит " />
+                <Run FontFamily="Consolas" Text="tools\remove-protection.bat" />
+                <Run Text=": двойной клик, скрипт сам запросит права и уберёт правила." />
+            </TextBlock>
+
+            <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#7A828E">
+                <Run FontWeight="SemiBold" Text="Windows SmartScreen." />
+                <Run Text="Приложение не подписано платным сертификатом, поэтому при установке или первом запуске Windows может показать синее предупреждение «Windows защитила ваш компьютер». Подробности и как продолжить — в README." />
+            </TextBlock>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="ContinueButton" Content="Понятно, продолжить" Width="180" Height="32"
+                    IsDefault="True" IsCancel="True" Click="ContinueButton_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

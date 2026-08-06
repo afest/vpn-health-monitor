@@ -16,3 +16,7 @@ UpgradeLog*.XML
 
 # Logs / temp
 *.log
+
+# T-334: сборочные артефакты установщика, не исходники
+/publish/
+/installer/Output/
