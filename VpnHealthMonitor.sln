@@ -1,0 +1,30 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VpnHealthMonitor", "VpnHealthMonitor\VpnHealthMonitor.csproj", "{8C42A72B-F6E2-4C2E-A9B0-CB2D6F1C25A9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VpnHealthMonitor.Tests", "VpnHealthMonitor.Tests\VpnHealthMonitor.Tests.csproj", "{645508AA-4A80-4672-AF93-AA98A2F93017}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8C42A72B-F6E2-4C2E-A9B0-CB2D6F1C25A9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C42A72B-F6E2-4C2E-A9B0-CB2D6F1C25A9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C42A72B-F6E2-4C2E-A9B0-CB2D6F1C25A9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C42A72B-F6E2-4C2E-A9B0-CB2D6F1C25A9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{645508AA-4A80-4672-AF93-AA98A2F93017}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{645508AA-4A80-4672-AF93-AA98A2F93017}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{645508AA-4A80-4672-AF93-AA98A2F93017}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{645508AA-4A80-4672-AF93-AA98A2F93017}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0D9A1899-B8E9-447C-9526-49CD9AB94F28}
+	EndGlobalSection
+EndGlobal

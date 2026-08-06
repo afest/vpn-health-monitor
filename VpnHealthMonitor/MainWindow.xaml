@@ -1,0 +1,431 @@
+<Window x:Class="VpnHealthMonitor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="VPN Health Monitor"
+        Icon="Heart.ico"
+        Height="760"
+        MinHeight="650"
+        Width="1120"
+        MinWidth="980"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <Style x:Key="LabelText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#5B6472" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+        </Style>
+        <Style x:Key="ValueText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin" Value="0,0,12,12" />
+            <Setter Property="Padding" Value="12" />
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+            <Setter Property="Padding" Value="6,4" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border x:Name="StatusBanner"
+                Grid.Row="0"
+                Background="#606A76"
+                CornerRadius="8"
+                Padding="18"
+                Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock x:Name="StatusText"
+                           Text="НЕИЗВЕСТНО"
+                           Foreground="White"
+                           FontSize="30"
+                           FontWeight="Bold" />
+                <TextBlock x:Name="StatusDescriptionText"
+                           Text="Загрузи настройки и запусти проверку."
+                           Foreground="#EEF2F5"
+                           FontSize="14"
+                           TextWrapping="Wrap"
+                           Margin="0,4,0,0" />
+            </StackPanel>
+        </Border>
+
+        <WrapPanel Grid.Row="1" Margin="0,0,0,12">
+            <Button x:Name="StartButton" Content="Старт мониторинга" Click="StartButton_Click" />
+            <Button x:Name="StopButton" Content="Стоп мониторинга" Click="StopButton_Click" IsEnabled="False" />
+            <Button x:Name="RunCheckButton" Content="Проверить сейчас" Click="RunCheckButton_Click" />
+            <Button x:Name="BaselineButton" Content="Текущий IP как baseline" Click="BaselineButton_Click" />
+            <Button Content="Открыть папку логов" Click="OpenLogsButton_Click" />
+            <Button Content="Export CSV" Click="ExportCsvButton_Click" />
+        </WrapPanel>
+
+        <TabControl Grid.Row="2">
+            <TabItem Header="Сводка">
+                <Grid Margin="0,12,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.1*" />
+                        <ColumnDefinition Width="1*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <GroupBox Header="Текущая сеть" Grid.Column="0" Grid.Row="0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1*" />
+                                <ColumnDefinition Width="1*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Margin="0,0,14,0">
+                                <TextBlock Style="{StaticResource LabelText}" Text="Внешний IPv4" ToolTip="Публичный IPv4, который видят внешние сайты через текущую сеть или VPN." />
+                                <TextBlock x:Name="ExternalIpText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Внешний IPv6" ToolTip="Публичный IPv6 через IPv6-only endpoint'ы, если проверка включена." />
+                                <TextBlock x:Name="ExternalIpv6Text" Style="{StaticResource ValueText}" Text="Выключено" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Страна" ToolTip="Страна публичного IP по geo/API. Показывается полным названием, например Швеция." />
+                                <TextBlock x:Name="CountryText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="ASN / провайдер" ToolTip="Автономная система и владелец сети, к которой относится внешний IP." />
+                                <TextBlock x:Name="ProviderText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Активный интерфейс / default route" ToolTip="Best-effort интерфейс Windows, через который сейчас идет основной IPv4-трафик." />
+                                <TextBlock x:Name="InterfaceText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Результаты IP API" ToolTip="Что показал каждый внешний IP-сервис. Если IP разные, VPN или правила маршрутизации отдают разные egress-IP для разных сайтов." />
+                                <TextBlock x:Name="IpApiResultsText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="DNS-серверы" ToolTip="DNS-серверы, которые Windows видит на активных сетевых интерфейсах." />
+                                <TextBlock x:Name="DnsServersText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Style="{StaticResource LabelText}" Text="Ожидаемая страна" ToolTip="Ожидаемая страна VPN. Если пусто, страна не участвует в проверке риска утечки." />
+                                <TextBlock x:Name="ExpectedCountryText" Style="{StaticResource ValueText}" Text="Не задано" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Ожидаемые IPv4" ToolTip="Разрешенный список публичных IPv4. Учитывается как риск только если включен чекбокс риска по IP." />
+                                <TextBlock x:Name="ExpectedIpText" Style="{StaticResource ValueText}" Text="Не задано" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Ожидаемый VPN-интерфейс" ToolTip="Ожидаемый default route/VPN-адаптер. Если текущий маршрут ушел на другой адаптер, это может означать выключенный VPN." />
+                                <TextBlock x:Name="ExpectedInterfaceText" Style="{StaticResource ValueText}" Text="Не задано" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Проверка маршрута" ToolTip="Проверка «риск по маршруту VPN» сравнивает текущий default route с ожидаемым интерфейсом. В режиме системного прокси маршрут не меняется никогда, и такая проверка ничего не гарантирует." />
+                                <TextBlock x:Name="RouteCheckText" Style="{StaticResource ValueText}" Text="Проверка маршрута выключена" TextWrapping="Wrap" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Последняя успешная проверка" ToolTip="Время последней проверки, где удалось получить внешний IPv4." />
+                                <TextBlock x:Name="LastSuccessText" Style="{StaticResource ValueText}" Text="Никогда" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Последняя смена IP" ToolTip="Когда приложение заметило смену внешнего IPv4 в текущем запуске." />
+                                <TextBlock x:Name="LastIpChangeText" Style="{StaticResource ValueText}" Text="Никогда" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Baseline" ToolTip="Сохраненная нормальная точка: внешний IPv4, страна и время установки baseline." />
+                                <TextBlock x:Name="BaselineText" Style="{StaticResource ValueText}" Text="Не задано" />
+                            </StackPanel>
+                        </Grid>
+                    </GroupBox>
+
+                    <StackPanel Grid.Column="1" Grid.Row="0">
+                        <GroupBox Header="Статистика сессии">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="1*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Здоровое время" ToolTip="Сколько времени текущий запуск находится в здоровом статусе без проблем." />
+                                    <TextBlock x:Name="UptimeText" Style="{StaticResource ValueText}" Text="00:00:00" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Инциденты" ToolTip="Сколько раз за текущий запуск начинался проблемный статус: риск утечки, нет интернета, проверка не удалась или сеть просела." />
+                                    <TextBlock x:Name="OutagesText" Style="{StaticResource ValueText}" Text="0" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Время проблем" ToolTip="Суммарное время в проблемных статусах: нет интернета, риск утечки, сеть просела, проверка не удалась." />
+                                    <TextBlock x:Name="ProblemTimeText" Style="{StaticResource ValueText}" Text="00:00:00" />
+                                </StackPanel>
+                            </Grid>
+                        </GroupBox>
+
+                        <GroupBox Header="Проверки качества">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="1*" />
+                                    <ColumnDefinition Width="1*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Средний ping (20 проверок)" ToolTip="Средняя задержка ICMP ping по последним 20 проверкам, если ping доступен." />
+                                    <TextBlock x:Name="PingText" Style="{StaticResource ValueText}" Text="н/д" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Потери ping (20 проверок)" ToolTip="Процент потерь ICMP ping по последним 20 проверкам. Это качество сети, а не счетчик смены страны или выключения VPN." />
+                                    <TextBlock x:Name="PacketLossText" Style="{StaticResource ValueText}" Text="н/д" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Доступность HTTP" ToolTip="Проверка обычной доступности интернета через несколько HTTP endpoint'ов." />
+                                    <TextBlock x:Name="HttpText" Style="{StaticResource ValueText}" Text="Неизвестно" />
+                                </StackPanel>
+                            </Grid>
+                        </GroupBox>
+                    </StackPanel>
+
+                    <GroupBox Header="Последние события" Grid.Column="0" Grid.ColumnSpan="2" Grid.Row="1">
+                        <ListView x:Name="EventsList" MinHeight="260">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Время" Width="80" DisplayMemberBinding="{Binding TimeText}" />
+                                    <GridViewColumn Header="Статус" Width="150" DisplayMemberBinding="{Binding StatusText}" />
+                                    <GridViewColumn Header="Описание" Width="320" DisplayMemberBinding="{Binding Description}" />
+                                    <GridViewColumn Header="IPv4" Width="130" DisplayMemberBinding="{Binding IPv4}" />
+                                    <GridViewColumn Header="IPv6" Width="150" DisplayMemberBinding="{Binding IPv6}" />
+                                    <GridViewColumn Header="Страна" Width="120" DisplayMemberBinding="{Binding CountryText}" />
+                                    <GridViewColumn Header="Ping" Width="80" DisplayMemberBinding="{Binding PingText}" />
+                                    <GridViewColumn Header="Потери" Width="80" DisplayMemberBinding="{Binding PacketLossText}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Настройки">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Grid Margin="0,12,16,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="220" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Интервал, сек" ToolTip="Пауза между автоматическими проверками при включенном мониторинге." />
+                        <TextBox x:Name="IntervalTextBox" Grid.Row="0" Grid.Column="1" Text="5" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="Ожидаемая страна" ToolTip="Ожидаемая страна VPN. Можно писать полное название или код, например Швеция или SE." />
+                        <TextBox x:Name="ExpectedCountryTextBox" Grid.Row="1" Grid.Column="1" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по стране" ToolTip="Если включено, другая страна относительно ожидаемой даст «РИСК УТЕЧКИ»." />
+                        <CheckBox x:Name="CountryRiskCheckBox" Grid.Row="2" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelText}" Text="Ожидаемые IPv4" ToolTip="Список разрешенных внешних IPv4 через пробел, запятую или с новой строки." />
+                        <TextBox x:Name="ExpectedIpsTextBox"
+                                 Grid.Row="3"
+                                 Grid.Column="1"
+                                 AcceptsReturn="True"
+                                 MinHeight="72"
+                                 VerticalScrollBarVisibility="Auto" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по IPv4" ToolTip="Если включено, IP вне списка ожидаемых IPv4 или запрещенная смена baseline IP даст «РИСК УТЕЧКИ»." />
+                        <CheckBox x:Name="IpRiskCheckBox" Grid.Row="4" Grid.Column="1" Margin="0,4,0,12" />
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешить смену IP в стране" ToolTip="Если включено, смена IP при совпадающей стране будет предупреждением «IP ИЗМЕНИЛСЯ», а не «РИСК УТЕЧКИ»." />
+                        <CheckBox x:Name="AllowIpChangesCheckBox" Grid.Row="5" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource LabelText}" Text="Ожидаемый VPN-интерфейс" ToolTip="Выбери свой VPN-адаптер из списка. Можно вписать имя или его часть вручную. Кнопка baseline заполняет поле автоматически." />
+                        <ComboBox x:Name="ExpectedInterfaceBox" Grid.Row="6" Grid.Column="1" IsEditable="True" IsTextSearchEnabled="False" />
+
+                        <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по маршруту VPN" ToolTip="Если включено, уход default route с ожидаемого VPN-интерфейса даст «РИСК УТЕЧКИ», даже если IP API временно не ответили." />
+                        <CheckBox x:Name="RouteRiskCheckBox" Grid.Row="7" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="8" Grid.Column="0" Style="{StaticResource LabelText}" Text="IPv6 leak check" ToolTip="Если включено, приложение пробует получить внешний IPv6 через IPv6-only endpoint'ы." />
+                        <CheckBox x:Name="Ipv6CheckBox" Grid.Row="8" Grid.Column="1" Margin="0,4,0,12" />
+
+                        <TextBlock Grid.Row="9" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешить внешний IPv6" ToolTip="Если выключено и внешний IPv6 виден наружу, статус станет «РИСК УТЕЧКИ»." />
+                        <CheckBox x:Name="AllowExternalIpv6CheckBox" Grid.Row="9" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="10" Grid.Column="0" Style="{StaticResource LabelText}" Text="IPv6/API endpoint'ы" ToolTip="IPv6-only сервисы для проверки внешнего IPv6." />
+                        <TextBox x:Name="Ipv6ApiEndpointsTextBox"
+                                 Grid.Row="10"
+                                 Grid.Column="1"
+                                 AcceptsReturn="True"
+                                 MinHeight="72"
+                                 VerticalScrollBarVisibility="Auto" />
+
+                        <TextBlock Grid.Row="11" Grid.Column="0" Style="{StaticResource LabelText}" Text="Enable DNS check" ToolTip="Если включено, приложение показывает DNS-серверы, которые видит Windows." />
+                        <CheckBox x:Name="DnsCheckBox" Grid.Row="11" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="12" Grid.Column="0" Style="{StaticResource LabelText}" Text="Уведомления" ToolTip="Доставка Windows-балунов: главный переключатель плюс per-type фильтры шумных событий. Меняют только показ балуна — детект и tray-иконка работают всегда." />
+                        <StackPanel Grid.Row="12" Grid.Column="1" Margin="0,4,0,12">
+                            <CheckBox x:Name="WindowsNotificationsCheckBox" Content="Включить уведомления Windows" IsChecked="True"
+                                      ToolTip="Главный выключатель. Если снят — балуны не показываются вообще." />
+                            <CheckBox x:Name="NotifyCountryChangedCheckBox" Content="Уведомлять о смене страны (важно)" IsChecked="True" Margin="18,6,0,0"
+                                      ToolTip="Ban-релевантный сигнал. По умолчанию включён." />
+                            <CheckBox x:Name="NotifyIpChangedCheckBox" Content="Уведомлять о смене IP (шумно)" Margin="18,4,0,0"
+                                      ToolTip="Внешний IP меняется часто и мало влияет на баны. По умолчанию выключен, чтобы не зашумлять важные алерты." />
+                            <TextBlock Style="{StaticResource LabelText}" Margin="18,6,0,0" TextWrapping="Wrap"
+                                       Text="Алерт «защита приложения не действует» (kill-switch) показывается всегда — это сигнал безопасности." />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="13" Grid.Column="0" Style="{StaticResource LabelText}" Text="Закрывать в трей" ToolTip="Если мониторинг запущен, закрытие окна спрячет его в tray, а не остановит мониторинг." />
+                        <CheckBox x:Name="MinimizeToTrayCheckBox" Grid.Row="13" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="14" Grid.Column="0" Style="{StaticResource LabelText}" Text="IPv4/API endpoint'ы" ToolTip="Сервисы для получения внешнего IPv4 и geo. Используются с fallback, не один-единственный источник." />
+                        <TextBox x:Name="IpApiEndpointsTextBox"
+                                 Grid.Row="14"
+                                 Grid.Column="1"
+                                 AcceptsReturn="True"
+                                 MinHeight="96"
+                                 VerticalScrollBarVisibility="Auto" />
+
+                        <TextBlock Grid.Row="15" Grid.Column="0" Style="{StaticResource LabelText}" Text="Порог ping, ms" ToolTip="Порог среднего ping. Если выше, статус станет «СЕТЬ ПРОСЕЛА» при корректном IP." />
+                        <TextBox x:Name="PingThresholdTextBox" Grid.Row="15" Grid.Column="1" Text="250" />
+
+                        <TextBlock Grid.Row="16" Grid.Column="0" Style="{StaticResource LabelText}" Text="Порог потерь, %" ToolTip="Порог потерь ping. Если выше, статус станет «СЕТЬ ПРОСЕЛА» при корректном IP." />
+                        <TextBox x:Name="LossThresholdTextBox" Grid.Row="16" Grid.Column="1" Text="5" />
+
+                        <TextBlock Grid.Row="17" Grid.Column="0" Style="{StaticResource LabelText}" Text="Папка логов" ToolTip="Папка, куда сохраняются локальные JSONL-логи событий." />
+                        <TextBox x:Name="LogsFolderTextBox" Grid.Row="17" Grid.Column="1" />
+
+                        <TextBlock Grid.Row="18" Grid.Column="0" Style="{StaticResource LabelText}" Text="Автосохранение логов" ToolTip="Если включено, события мониторинга автоматически записываются в JSONL-файл." />
+                        <CheckBox x:Name="AutosaveLogsCheckBox" Grid.Row="18" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+
+                        <TextBlock Grid.Row="19" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по провайдеру" ToolTip="Если включено, выход через провайдера вне списка разрешённых даст «РИСК УТЕЧКИ». Единственная проверка, которая работает, когда VPN выходит в твоей же стране: при обрыве туннеля провайдер становится домашним. Если список пуст или провайдер не определён — проверка молчит." />
+                        <CheckBox x:Name="ProviderRiskCheckBox" Grid.Row="19" Grid.Column="1" Margin="0,4,0,12" />
+
+                        <TextBlock Grid.Row="20" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешённые провайдеры" ToolTip="Провайдеры, которые считаются «это по-прежнему мой VPN»: имя организации, ASN или «Имя (ASNxxxx)» — по одному в строке. Кнопка baseline добавляет текущего автоматически. Если VPN переключается между хостерами, добавь их все." />
+                        <StackPanel Grid.Row="20" Grid.Column="1">
+                            <TextBox x:Name="AllowedProvidersTextBox"
+                                     AcceptsReturn="True"
+                                     MinHeight="72"
+                                     VerticalScrollBarVisibility="Auto" />
+                            <Button Content="Добавить текущего провайдера" HorizontalAlignment="Left" Margin="0,6,0,12"
+                                    Click="AddCurrentProviderButton_Click" />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="21" Grid.Column="0" Style="{StaticResource LabelText}" Text="HTTP-пробы доступности" ToolTip="Адреса, по которым проверяется «есть ли интернет вообще». Если в твоей сети заблокированы Google и Cloudflare — замени их на доступные. Пустое поле вернёт значения по умолчанию." />
+                        <TextBox x:Name="HttpProbesTextBox"
+                                 Grid.Row="21"
+                                 Grid.Column="1"
+                                 AcceptsReturn="True"
+                                 MinHeight="72"
+                                 VerticalScrollBarVisibility="Auto" />
+
+                        <TextBlock Grid.Row="22" Grid.Column="0" Style="{StaticResource LabelText}" Text="Хосты для ping" ToolTip="Адреса для ICMP-проверки задержки и потерь. Пустое поле вернёт значения по умолчанию." />
+                        <TextBox x:Name="PingHostsTextBox"
+                                 Grid.Row="22"
+                                 Grid.Column="1"
+                                 AcceptsReturn="True"
+                                 MinHeight="52"
+                                 VerticalScrollBarVisibility="Auto" />
+
+                        <StackPanel Grid.Row="23" Grid.Column="1" Orientation="Horizontal">
+                            <Button Content="Сохранить настройки" Click="SaveSettingsButton_Click" />
+                            <Button Content="Перезагрузить настройки" Click="ReloadSettingsButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Защищённые приложения">
+                <Grid Margin="0,12,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="#FFF6E6" BorderBrush="#E0C580" BorderThickness="1"
+                            CornerRadius="6" Padding="10" Margin="0,0,12,10">
+                        <StackPanel>
+                            <TextBlock Text="Режим «закрыто по умолчанию» для выбранных программ" FontWeight="SemiBold" />
+                            <TextBlock TextWrapping="Wrap" Margin="0,4,0,0" Foreground="#5B6472"
+                                       Text="Для выбранных .exe создаётся постоянное правило Windows Firewall, блокирующее их ПРЯМОЙ выход через физические адаптеры (Wi-Fi/Ethernet/Bluetooth). Через VPN (TUN-адаптер или системный прокси) они продолжают работать. Если VPN выключен — прямого выхода нет (fail-closed). Операции с правилами требуют прав администратора (UAC). Windows Firewall не умеет «разрешить ровно один VPN-адаптер»; в режиме системного прокси рабочими остаются только программы, которые этот прокси используют." />
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Grid.Row="1" Margin="0,0,0,8">
+                        <TextBlock x:Name="AdminStatusText" Style="{StaticResource LabelText}"
+                                   Text="Права администратора: проверяю..." />
+                        <TextBlock x:Name="BlockedAdaptersText" Style="{StaticResource LabelText}" TextWrapping="Wrap"
+                                   Margin="0,4,0,0" Text="Адаптеры блокировки: список появится после применения правил." />
+                        <TextBlock Style="{StaticResource LabelText}" TextWrapping="Wrap" Margin="0,4,0,0" Foreground="#8A6D1F"
+                                   Text="Пропал интернет? Нажми «Отключить защиту» — правила снимутся. Если приложение не открывается, запусти tools\remove-protection.bat из папки приложения: он сам попросит права администратора." />
+                    </StackPanel>
+
+                    <WrapPanel Grid.Row="2" Margin="0,0,0,10">
+                        <Button Content="Добавить программу" Click="AddAppButton_Click" />
+                        <Button Content="Применить правила" Click="ApplyRulesButton_Click" />
+                        <Button Content="Отключить защиту" Click="DisableProtectionButton_Click" />
+                        <Button Content="Обновить статус" Click="RefreshProtectionButton_Click" />
+                    </WrapPanel>
+
+                    <GroupBox Header="Защищённые программы" Grid.Row="3">
+                        <ListView x:Name="ProtectedAppsList" MinHeight="280">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding StatusText}" Value="Путь устарел">
+                                            <Setter Property="Background" Value="#FCE8C8" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Программа" Width="170" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Путь" Width="330" DisplayMemberBinding="{Binding Path}" />
+                                    <GridViewColumn Header="Статус" Width="130" DisplayMemberBinding="{Binding StatusText}" />
+                                    <GridViewColumn Header="Правила применены" Width="140" DisplayMemberBinding="{Binding AppliedText}" />
+                                    <GridViewColumn Header="Действия" Width="320">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <WrapPanel Orientation="Horizontal">
+                                                    <Button Content="Обновить путь" Click="UpdatePathApp_Click"
+                                                            Visibility="{Binding CanUpdatePath, Converter={StaticResource BoolToVis}}"
+                                                            ToolTip="{Binding ResolvedNewPath}"
+                                                            Margin="0,0,6,0" Padding="8,3" MinHeight="26" />
+                                                    <Button Content="Переустановить" Click="ReinstallApp_Click"
+                                                            Margin="0,0,6,0" Padding="8,3" MinHeight="26" />
+                                                    <Button Content="Удалить" Click="RemoveApp_Click"
+                                                            Margin="0" Padding="8,3" MinHeight="26" />
+                                                </WrapPanel>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <TextBlock x:Name="FooterText"
+                   Grid.Row="3"
+                   Text="Настройки: загрузка..."
+                   Foreground="#5B6472"
+                   FontSize="12"
+                   Margin="0,8,0,0" />
+    </Grid>
+</Window>
