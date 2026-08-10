@@ -20,7 +20,7 @@
 
 ## Установка
 
-1. Скачайте установщик: **[VpnHealthMonitor-Setup.exe](https://github.com/afest/vpn-health-monitor/releases/latest/download/VpnHealthMonitor-Setup.exe)** (~47 МБ) — или со [страницы релизов](https://github.com/afest/vpn-health-monitor/releases/latest).
+1. Откройте [страницу релизов](https://github.com/afest/vpn-health-monitor/releases/latest), в разделе **Assets** скачайте `VpnHealthMonitor-Setup.exe` (~47 МБ).
 2. Запустите. Права администратора для установки **не нужны** — программа ставится в вашу папку пользователя (`%LOCALAPPDATA%\Programs\VpnHealthMonitor`). Установщик создаёт ярлык в меню «Пуск», ярлык на рабочем столе — по желанию, галкой.
 3. При первом запуске появится короткий экран: что делает kill switch, зачем нужны права администратора и где кнопка возврата интернета. Показывается один раз.
 
