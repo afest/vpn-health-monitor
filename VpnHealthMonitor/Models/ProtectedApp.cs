@@ -55,4 +55,26 @@ public static class ProtectionStatusText
         ProtectionStatus.PathChanged => "Путь устарел",
         _ => "Ошибка"
     };
+
+    /// <summary>
+    /// Знак состояния для таблицы. Цвет в security-UI не может быть единственным отличием: формы
+    /// подобраны так, чтобы состояния различались и на обесцвеченном скриншоте.
+    /// </summary>
+    public static string ToGlyph(this ProtectionStatus status) => status switch
+    {
+        ProtectionStatus.Protected => "✓",        // галочка
+        ProtectionStatus.RulesNotApplied => "○",  // пустой круг
+        ProtectionStatus.FileNotFound => "?",
+        ProtectionStatus.PathChanged => "▲",      // треугольник
+        _ => "✕"                                  // крест
+    };
+
+    public static string ToHint(this ProtectionStatus status) => status switch
+    {
+        ProtectionStatus.Protected => "Правило есть и указывает на текущий .exe — прямой выход закрыт.",
+        ProtectionStatus.RulesNotApplied => "Правило ещё не создано. Нажми «Применить правила» (запросит UAC).",
+        ProtectionStatus.FileNotFound => "Файла по сохранённому пути нет: программа удалена или переустановлена в другое место.",
+        ProtectionStatus.PathChanged => "Правило указывает на мёртвый путь — защита НЕ действует. Нажми «Обновить путь».",
+        _ => "Статус не определён: правило не соответствует ожидаемому или запрос к firewall не прошёл."
+    };
 }

@@ -9,7 +9,16 @@ public sealed class ProtectedAppRow
 
     public string Path { get; init; } = string.Empty;
 
+    /// <summary>Состояние защиты. Разметка раскрашивает строку по нему, а не по локализованному тексту.</summary>
+    public ProtectionStatus Status { get; init; }
+
     public string StatusText { get; init; } = string.Empty;
+
+    /// <summary>Знак состояния — второе отличие помимо цвета.</summary>
+    public string StatusGlyph => Status.ToGlyph();
+
+    /// <summary>Расшифровка состояния в tooltip'е ячейки.</summary>
+    public string StatusHint => Status.ToHint();
 
     public string AppliedText { get; init; } = string.Empty;
 

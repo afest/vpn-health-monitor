@@ -86,6 +86,12 @@ public sealed class AppSettings
 
     public bool AutosaveLogs { get; set; } = true;
 
+    /// <summary>
+    /// Подробный вид таблицы событий (плюс IPv4, IPv6, потери). По умолчанию выключен: в повседневном
+    /// просмотре эти три колонки съедают ширину, ради которой таблицу и разворачивают.
+    /// </summary>
+    public bool EventsDetailedView { get; set; }
+
     public BaselineInfo? Baseline { get; set; }
 
     /// <summary>Per-app kill switch: executables protected with Block-outbound-on-physical rules. Default empty.</summary>

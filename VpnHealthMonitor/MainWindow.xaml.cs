@@ -59,12 +59,16 @@ public partial class MainWindow : Window
     private int _incidentCount;
     private bool? _internetWasAvailable;
     private bool _exitRequested;
+    private bool _uiReady;
+    private bool _networkWarningShown;
+    private bool _eventsDetailed;
 
     public MainWindow()
     {
         InitializeComponent();
         EventsList.ItemsSource = _events;
         ProtectedAppsList.ItemsSource = _protectedAppRows;
+        ApplyEventsViewMode(detailed: false);
         InitializeTrayIcon();
     }
 
@@ -77,6 +81,7 @@ public partial class MainWindow : Window
         await RefreshProtectedAppsAsync(logIssues: false);
         await RefreshAdapterChoicesAsync();
         UpdateDashboard(_lastSnapshot, null);
+        _uiReady = true;
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -137,6 +142,22 @@ public partial class MainWindow : Window
     {
         await SaveSettingsFromUiAsync();
         await RunSingleCheckAsync("manual-check", CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Три действия, которыми пользуются редко (baseline, папка логов, экспорт), живут в меню за «⋯»:
+    /// в ряду остаются только старт/стоп/проверить. Сами обработчики не менялись.
+    /// </summary>
+    private void MoreActionsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button button || button.ContextMenu is null)
+        {
+            return;
+        }
+
+        button.ContextMenu.PlacementTarget = button;
+        button.ContextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        button.ContextMenu.IsOpen = true;
     }
 
     private async void BaselineButton_Click(object sender, RoutedEventArgs e)
@@ -340,6 +361,83 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Компактный вид (Время · Статус · Описание · Страна · Ping) — повседневный; подробный добавляет
+    /// IPv4, IPv6 и потери. Выбор пишется в настройки, поэтому переживает перезапуск.
+    /// </summary>
+    private async void EventsViewRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        var detailed = DetailedViewRadio?.IsChecked == true;
+        ApplyEventsViewMode(detailed);
+
+        if (!_uiReady || _settings.EventsDetailedView == detailed)
+        {
+            return;
+        }
+
+        _settings.EventsDetailedView = detailed;
+        await _settingsService.SaveAsync(_settings);
+    }
+
+    private void ApplyEventsViewMode(bool detailed)
+    {
+        if (EventsList?.View is not System.Windows.Controls.GridView grid)
+        {
+            return;
+        }
+
+        SetColumnVisible(grid, EventIpv4Column, detailed, 3);
+        SetColumnVisible(grid, EventIpv6Column, detailed, 4);
+        SetColumnVisible(grid, EventLossColumn, detailed, 7);
+        _eventsDetailed = detailed;
+        ResizeEventsDescriptionColumn();
+    }
+
+    /// <summary>
+    /// «Описание» занимает всю ширину, не занятую остальными колонками: на минимальном размере окна
+    /// фиксированная ширина уводила таблицу в горизонтальную прокрутку и прятала Ping.
+    /// Ширина списка задаётся гридом сверху вниз, поэтому обратной связи в разметке не возникает.
+    /// </summary>
+    private void ResizeEventsDescriptionColumn()
+    {
+        // Время 78 + Статус 140 + Страна 110 + Ping 72; подробный добавляет IPv4 120, IPv6 140, Потери 72.
+        var fixedWidth = _eventsDetailed ? 732d : 400d;
+        var available = EventsList.ActualWidth - fixedWidth - 24;
+        EventDescriptionColumn.Width = Math.Max(200, available);
+    }
+
+    private void EventsList_SizeChanged(object sender, SizeChangedEventArgs e)
+        => ResizeEventsDescriptionColumn();
+
+    /// <summary>
+    /// «Путь» добирает остаток ширины: иначе таблица защищённых программ уезжает в горизонтальную
+    /// прокрутку и колонка «Действия» оказывается за краем окна.
+    /// </summary>
+    private void ProtectedAppsList_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // Программа 170 + Статус 175 + Правила применены 140 + Действия 300.
+        var available = ProtectedAppsList.ActualWidth - 785 - 24;
+        ProtectedPathColumn.Width = Math.Max(160, available);
+    }
+
+    private static void SetColumnVisible(
+        System.Windows.Controls.GridView grid,
+        System.Windows.Controls.GridViewColumn column,
+        bool visible,
+        int index)
+    {
+        if (!visible)
+        {
+            grid.Columns.Remove(column);
+            return;
+        }
+
+        if (!grid.Columns.Contains(column))
+        {
+            grid.Columns.Insert(Math.Min(index, grid.Columns.Count), column);
+        }
+    }
+
     private async Task LoadSettingsAsync()
     {
         _settings = await _settingsService.LoadAsync();
@@ -454,6 +552,17 @@ public partial class MainWindow : Window
         LossThresholdTextBox.Text = _settings.DegradedPacketLossThresholdPercent.ToString("0.#");
         LogsFolderTextBox.Text = _settings.LogsFolderPath;
         AutosaveLogsCheckBox.IsChecked = _settings.AutosaveLogs;
+        if (_settings.EventsDetailedView)
+        {
+            DetailedViewRadio.IsChecked = true;
+        }
+        else
+        {
+            CompactViewRadio.IsChecked = true;
+        }
+
+        // Явно: если нужный переключатель уже отмечен, событие Checked не придёт.
+        ApplyEventsViewMode(_settings.EventsDetailedView);
         BaselineText.Text = FormatBaseline(_settings.Baseline);
         UpdateRouteModeControls();
     }
@@ -828,9 +937,8 @@ public partial class MainWindow : Window
                 : routeState == RouteCheckState.NeedsConfiguration
                     ? $"{expectedInterface} — не найден в Windows"
                     : expectedInterface;
-        UpdateRouteCheckText(
-            routeState,
-            result?.ExitCheck ?? HealthEvaluator.GetExitCheckState(_settings));
+        var exitCheck = result?.ExitCheck ?? HealthEvaluator.GetExitCheckState(_settings);
+        UpdateRouteCheckText(routeState, exitCheck);
         LastSuccessText.Text = _lastSuccessfulCheckAt.HasValue ? FormatTime(_lastSuccessfulCheckAt.Value) : "Никогда";
         LastIpChangeText.Text = _lastIpChangeAt.HasValue ? FormatTime(_lastIpChangeAt.Value) : "Никогда";
         BaselineText.Text = FormatBaseline(_settings.Baseline);
@@ -842,6 +950,9 @@ public partial class MainWindow : Window
             ? "н/д"
             : $"{_rollingWindow.PacketLossPercent:0.#}% ({_rollingWindow.Count}/20)";
 
+        UpdateNetworkCardSummary(snapshot ?? _lastSnapshot, routeState, exitCheck);
+        UpdateQualityCardSummary(snapshot ?? _lastSnapshot);
+
         if (result is not null)
         {
             UpdateStatusBanner(result.Status, result.Description);
@@ -849,6 +960,72 @@ public partial class MainWindow : Window
 
         UpdateSessionStats();
     }
+
+    /// <summary>
+    /// Шапка свёрнутой «Текущей сети»: страна и внешний IP — то, ради чего в блок заглядывают.
+    /// Свёрнутый блок не имеет права молчать о проблеме внутри: при warning'е шапка меняет текст,
+    /// показывает знак и один раз разворачивает блок сама.
+    /// </summary>
+    private void UpdateNetworkCardSummary(NetworkSnapshot? snapshot, RouteCheckState routeState, VpnExitCheckState exitCheck)
+    {
+        var warning = routeState == RouteCheckState.NeedsConfiguration
+            || (routeState == RouteCheckState.NotApplicable && exitCheck == VpnExitCheckState.NotConfigured);
+
+        if (warning)
+        {
+            NetworkSummaryText.Text = routeState == RouteCheckState.NeedsConfiguration
+                ? "Маршрут требует настройки — открой блок"
+                : "VPN-выход фактически не контролируется — открой блок";
+        }
+        else
+        {
+            NetworkSummaryText.Text = snapshot is null
+                ? "Проверка ещё не запускалась"
+                : $"{CountryText.Text} · {ExternalIpText.Text}";
+        }
+
+        NetworkWarningBadge.Visibility = warning ? Visibility.Visible : Visibility.Collapsed;
+        NetworkSummaryText.Foreground = warning ? WarnBrush : MutedBrush;
+
+        if (!warning)
+        {
+            _networkWarningShown = false;
+        }
+        else if (!_networkWarningShown)
+        {
+            _networkWarningShown = true;
+            NetworkCardToggle.IsChecked = true;
+        }
+    }
+
+    /// <summary>Шапка свёрнутых «Проверок качества»: ping и доступность HTTP, знак — когда порог пробит.</summary>
+    private void UpdateQualityCardSummary(NetworkSnapshot? snapshot)
+    {
+        var ping = _rollingWindow.AveragePingMs.HasValue
+            ? $"ping {_rollingWindow.AveragePingMs.Value:0} ms"
+            : "ping н/д";
+        var http = snapshot is null
+            ? "HTTP неизвестно"
+            : snapshot.HttpAvailable ? "HTTP доступен" : "HTTP НЕДОСТУПЕН";
+
+        var pingBad = _rollingWindow.AveragePingMs.HasValue
+            && _rollingWindow.AveragePingMs.Value > _settings.DegradedPingThresholdMs;
+        var lossBad = _rollingWindow.Count > 0
+            && _rollingWindow.PacketLossPercent > _settings.DegradedPacketLossThresholdPercent;
+        var warning = (snapshot is not null && !snapshot.HttpAvailable) || pingBad || lossBad;
+
+        QualitySummaryText.Text = lossBad
+            ? $"{ping} · потери {_rollingWindow.PacketLossPercent:0.#}% · {http}"
+            : $"{ping} · {http}";
+        QualityWarningBadge.Visibility = warning ? Visibility.Visible : Visibility.Collapsed;
+        QualitySummaryText.Foreground = warning ? WarnBrush : MutedBrush;
+    }
+
+    private System.Windows.Media.Brush WarnBrush => (System.Windows.Media.Brush)FindResource("WarnBrush");
+
+    private System.Windows.Media.Brush MutedBrush => (System.Windows.Media.Brush)FindResource("MutedBrush");
+
+    private System.Windows.Media.Brush OkBrush => (System.Windows.Media.Brush)FindResource("OkBrush");
 
     private void UpdateSessionStats()
     {
@@ -864,6 +1041,10 @@ public partial class MainWindow : Window
         }
 
         ProblemTimeText.Text = FormatDuration(problemTime);
+
+        SessionSummaryText.Text = $"{UptimeText.Text} · инцидентов {_incidentCount}";
+        SessionWarningBadge.Visibility = _incidentCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+        SessionSummaryText.Foreground = _incidentCount > 0 ? WarnBrush : MutedBrush;
     }
 
     private void UpdateStatusBanner(MonitorStatus status, string description)
@@ -1205,7 +1386,9 @@ public partial class MainWindow : Window
 
     private void UpdateAdminStatus(bool? canVerifyLive = null)
     {
-        if (FirewallService.IsProcessElevated())
+        var elevated = FirewallService.IsProcessElevated();
+
+        if (elevated)
         {
             AdminStatusText.Text = "Права администратора: ДА — правила применяются без отдельного UAC.";
         }
@@ -1217,6 +1400,14 @@ public partial class MainWindow : Window
         {
             AdminStatusText.Text = "Права администратора: нет — каждая операция с правилами запросит UAC.";
         }
+
+        // Строка длинная и обрезается по ширине окна — полный текст остаётся в tooltip'е.
+        AdminStatusText.ToolTip = AdminStatusText.Text;
+        AdminStatusGlyph.Text = elevated ? "✓" : "!";
+        AdminStatusGlyph.Foreground = elevated ? OkBrush : WarnBrush;
+        AdminStatusBorder.Background = elevated
+            ? (System.Windows.Media.Brush)FindResource("SurfaceBrush")
+            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFB, 0xF2));
     }
 
     private void UpdateRouteCheckText(RouteCheckState state, VpnExitCheckState exitCheck)
@@ -1789,6 +1980,7 @@ public partial class MainWindow : Window
                 App = app,
                 Name = app.Name,
                 Path = app.Path,
+                Status = status,
                 StatusText = status.ToDisplayText(),
                 AppliedText = app.RulesAppliedAt.HasValue ? FormatTime(app.RulesAppliedAt.Value) : "—",
                 CanUpdatePath = status == ProtectionStatus.PathChanged,
