@@ -76,7 +76,7 @@
             <Button Content="Export CSV" Click="ExportCsvButton_Click" />
         </WrapPanel>
 
-        <TabControl Grid.Row="2">
+        <TabControl x:Name="MainTabs" Grid.Row="2">
             <TabItem Header="Сводка">
                 <Grid Margin="0,12,0,0">
                     <Grid.ColumnDefinitions>
@@ -115,10 +115,17 @@
                                 <TextBlock x:Name="ExpectedCountryText" Style="{StaticResource ValueText}" Text="Не задано" />
                                 <TextBlock Style="{StaticResource LabelText}" Text="Ожидаемые IPv4" ToolTip="Разрешенный список публичных IPv4. Учитывается как риск только если включен чекбокс риска по IP." />
                                 <TextBlock x:Name="ExpectedIpText" Style="{StaticResource ValueText}" Text="Не задано" />
-                                <TextBlock Style="{StaticResource LabelText}" Text="Ожидаемый VPN-интерфейс" ToolTip="Ожидаемый default route/VPN-адаптер. Если текущий маршрут ушел на другой адаптер, это может означать выключенный VPN." />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Ожидаемый VPN-интерфейс" ToolTip="Настраиваемый VPN-адаптер. Фактический активный интерфейс слева всегда читается из Windows и вручную не подменяется." />
                                 <TextBlock x:Name="ExpectedInterfaceText" Style="{StaticResource ValueText}" Text="Не задано" />
+                                <Button x:Name="ReconfigureRouteButton"
+                                        Content="Настроить маршрут"
+                                        HorizontalAlignment="Left"
+                                        Margin="0,0,0,10"
+                                        Click="ReconfigureRouteButton_Click" />
                                 <TextBlock Style="{StaticResource LabelText}" Text="Проверка маршрута" ToolTip="Проверка «риск по маршруту VPN» сравнивает текущий default route с ожидаемым интерфейсом. В режиме системного прокси маршрут не меняется никогда, и такая проверка ничего не гарантирует." />
                                 <TextBlock x:Name="RouteCheckText" Style="{StaticResource ValueText}" Text="Проверка маршрута выключена" TextWrapping="Wrap" />
+                                <TextBlock Style="{StaticResource LabelText}" Text="Контроль реального VPN-выхода" ToolTip="В режиме без отдельного адаптера прямой выход можно заметить только по ожидаемой стране, разрешённому ASN/провайдеру или строгому списку IP." />
+                                <TextBlock x:Name="VpnExitControlText" Style="{StaticResource ValueText}" Text="Не настроен" TextWrapping="Wrap" />
                                 <TextBlock Style="{StaticResource LabelText}" Text="Последняя успешная проверка" ToolTip="Время последней проверки, где удалось получить внешний IPv4." />
                                 <TextBlock x:Name="LastSuccessText" Style="{StaticResource ValueText}" Text="Никогда" />
                                 <TextBlock Style="{StaticResource LabelText}" Text="Последняя смена IP" ToolTip="Когда приложение заметило смену внешнего IPv4 в текущем запуске." />
@@ -194,7 +201,7 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Настройки">
+            <TabItem x:Name="SettingsTab" Header="Настройки">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <Grid Margin="0,12,16,0">
                         <Grid.ColumnDefinitions>
@@ -251,8 +258,22 @@
                         <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешить смену IP в стране" ToolTip="Если включено, смена IP при совпадающей стране будет предупреждением «IP ИЗМЕНИЛСЯ», а не «РИСК УТЕЧКИ»." />
                         <CheckBox x:Name="AllowIpChangesCheckBox" Grid.Row="5" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource LabelText}" Text="Ожидаемый VPN-интерфейс" ToolTip="Выбери свой VPN-адаптер из списка. Можно вписать имя или его часть вручную. Кнопка baseline заполняет поле автоматически." />
-                        <ComboBox x:Name="ExpectedInterfaceBox" Grid.Row="6" Grid.Column="1" IsEditable="True" IsTextSearchEnabled="False" />
+                        <TextBlock Grid.Row="6" Grid.Column="0" Style="{StaticResource LabelText}" Text="Режим VPN и интерфейс" ToolTip="Сначала выбери, создаёт ли VPN отдельный Windows-адаптер. В режиме с адаптером выбери его из списка; активный default route приложение читает само." />
+                        <StackPanel Grid.Row="6" Grid.Column="1" Margin="0,0,0,10">
+                            <ComboBox x:Name="RouteModeBox" SelectionChanged="RouteModeBox_SelectionChanged">
+                                <ComboBoxItem Tag="SeparateAdapter" Content="VPN создаёт отдельный адаптер (TUN/TAP/WireGuard)" />
+                                <ComboBoxItem Tag="NoSeparateAdapter" Content="VPN работает без отдельного адаптера (proxy/WFP/redirect)" />
+                            </ComboBox>
+                            <ComboBox x:Name="ExpectedInterfaceBox"
+                                      Margin="0,6,0,0"
+                                      IsEditable="True"
+                                      IsTextSearchEnabled="False"
+                                      ToolTip="Выбери VPN-адаптер из списка Windows. Ручной ввод оставлен для нестандартных или скрытых адаптеров." />
+                            <TextBlock x:Name="RouteModeHintText"
+                                       Style="{StaticResource LabelText}"
+                                       Margin="0,4,0,0"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
 
                         <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по маршруту VPN" ToolTip="Если включено, уход default route с ожидаемого VPN-интерфейса даст «РИСК УТЕЧКИ», даже если IP API временно не ответили." />
                         <CheckBox x:Name="RouteRiskCheckBox" Grid.Row="7" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />

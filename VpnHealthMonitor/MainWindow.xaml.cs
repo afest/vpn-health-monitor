@@ -40,6 +40,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<TrayIconKind, Drawing.Icon> _trayIcons = new();
     private readonly Dictionary<string, bool> _lastKnownExists = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _notifiedPathChange = new(StringComparer.OrdinalIgnoreCase);
+    private AdapterInventoryResult? _adapterInventoryResult;
+    private RouteCheckContext _routeCheckContext = RouteCheckContext.Unknown;
 
     private AppSettings _settings = new();
     private CancellationTokenSource? _monitoringCts;
@@ -74,6 +76,7 @@ public partial class MainWindow : Window
         UpdateAdminStatus();
         await RefreshProtectedAppsAsync(logIssues: false);
         await RefreshAdapterChoicesAsync();
+        UpdateDashboard(_lastSnapshot, null);
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -149,20 +152,88 @@ public partial class MainWindow : Window
             return;
         }
 
+        var suggestedAdapter = FindSuggestedVpnAdapter();
+        VpnRouteMode selectedMode;
+
+        if (suggestedAdapter is not null)
+        {
+            var choice = System.Windows.MessageBox.Show(
+                this,
+                $"Windows видит VPN-подобный адаптер:\n\n{suggestedAdapter}\n\n"
+                + "Да — контролировать default route через этот адаптер.\n"
+                + "Нет — настроить VPN без отдельного адаптера и контролировать выход по стране/ASN.\n"
+                + "Отмена — ничего не менять.",
+                "Как работает этот VPN?",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+            if (choice == MessageBoxResult.Cancel)
+            {
+                return;
+            }
+
+            selectedMode = choice == MessageBoxResult.Yes
+                ? VpnRouteMode.SeparateAdapter
+                : VpnRouteMode.NoSeparateAdapter;
+        }
+        else
+        {
+            var choice = System.Windows.MessageBox.Show(
+                this,
+                "Отдельный VPN-адаптер в Windows не найден. Это нормально для Karing и других клиентов в proxy/WFP/redirect-режиме.\n\n"
+                + "Настроить режим без отдельного адаптера? Монитор будет проверять реальный выход по стране и ASN/провайдеру.\n\n"
+                + "Настройки изменятся только после нажатия «Да».",
+                "VPN без отдельного адаптера",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (choice != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            selectedMode = VpnRouteMode.NoSeparateAdapter;
+        }
+
+        _settings.RouteMode = selectedMode;
+        _settings.TreatDefaultRouteChangeAsLeakRisk = true;
+
+        if (selectedMode == VpnRouteMode.SeparateAdapter)
+        {
+            _settings.ExpectedInterfaceName = suggestedAdapter!;
+        }
+        else
+        {
+            _settings.ExpectedInterfaceName = string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(_lastSnapshot.Country))
+            {
+                _settings.ExpectedCountry = CountryNames.ToDisplayName(_lastSnapshot.Country);
+                _settings.TreatCountryMismatchAsLeakRisk = true;
+            }
+
+            if (!ProviderMatcher.IsUnknown(_lastSnapshot.Asn, _lastSnapshot.Provider))
+            {
+                RememberProvider(_lastSnapshot.Asn, _lastSnapshot.Provider);
+                _settings.TreatProviderChangeAsLeakRisk = true;
+            }
+        }
+
         _settings.Baseline = new BaselineInfo
         {
             IPv4 = _lastSnapshot.ExternalIPv4,
             Country = _lastSnapshot.Country,
             Provider = _lastSnapshot.Provider,
             Asn = _lastSnapshot.Asn,
-            InterfaceName = _lastSnapshot.InterfaceName,
+            InterfaceName = selectedMode == VpnRouteMode.SeparateAdapter
+                ? _settings.ExpectedInterfaceName
+                : _lastSnapshot.InterfaceName,
             Timestamp = DateTimeOffset.Now
         };
 
         // Baseline = "вот так выглядит норма", поэтому текущий провайдер сразу становится разрешённым:
         // иначе включённый риск по провайдеру сработал бы на собственном же VPN сразу после настройки.
         RememberProvider(_lastSnapshot.Asn, _lastSnapshot.Provider);
-        _settings.ExpectedInterfaceName = _lastSnapshot.InterfaceName ?? _settings.ExpectedInterfaceName;
 
         if (_settings.ExpectedPublicIPv4.Count > 0
             && !_settings.ExpectedPublicIPv4.Contains(_lastSnapshot.ExternalIPv4, StringComparer.OrdinalIgnoreCase))
@@ -172,7 +243,7 @@ public partial class MainWindow : Window
 
         await _settingsService.SaveAsync(_settings);
         UpdateSettingsControls();
-        UpdateDashboard(_lastSnapshot, null);
+        await ReevaluateDashboardAsync("baseline-change");
         await AddEventAsync("baseline сохранен по текущему внешнему IPv4", _currentStatus, _lastSnapshot, CancellationToken.None);
     }
 
@@ -197,6 +268,7 @@ public partial class MainWindow : Window
 
         await _settingsService.SaveAsync(_settings);
         UpdateSettingsControls();
+        await ReevaluateDashboardAsync("provider-settings-change");
         FooterText.Text = $"Провайдер «{label}» добавлен в разрешённые.";
     }
 
@@ -221,13 +293,13 @@ public partial class MainWindow : Window
     {
         await SaveSettingsFromUiAsync();
         FooterText.Text = $"Настройки сохранены: {AppPaths.SettingsPath}";
-        UpdateDashboard(_lastSnapshot, null);
+        await ReevaluateDashboardAsync("settings-change");
     }
 
     private async void ReloadSettingsButton_Click(object sender, RoutedEventArgs e)
     {
         await LoadSettingsAsync();
-        UpdateDashboard(_lastSnapshot, null);
+        await ReevaluateDashboardAsync("settings-reload");
         await RefreshProtectedAppsAsync(logIssues: false);
     }
 
@@ -282,6 +354,38 @@ public partial class MainWindow : Window
         FooterText.Text = $"Настройки: {AppPaths.SettingsPath} | Логи: {_settings.LogsFolderPath}";
     }
 
+    /// <summary>
+    /// A saved setting can change the verdict even while monitoring is stopped. Re-evaluate the last
+    /// measured snapshot immediately so the route details and the top banner can never contradict each other.
+    /// </summary>
+    private async Task ReevaluateDashboardAsync(string trigger)
+    {
+        if (_lastSnapshot is null)
+        {
+            UpdateDashboard(null, null);
+            return;
+        }
+
+        var result = HealthEvaluator.Evaluate(_lastSnapshot, _rollingWindow, _settings, _routeCheckContext);
+        var previousStatus = _currentStatus;
+        _currentStatus = result.Status;
+
+        if (previousStatus != result.Status)
+        {
+            UpdateSessionAccounting(previousStatus, result.Status, DateTimeOffset.Now);
+            await AddStatusTransitionEventsAsync(previousStatus, result.Status, _lastSnapshot, CancellationToken.None);
+            await AddEventAsync(
+                $"статус пересчитан после изменения настроек ({trigger}): "
+                + $"{previousStatus.ToDisplayText()} -> {result.Status.ToDisplayText()}. {result.Description}",
+                result.Status,
+                _lastSnapshot,
+                CancellationToken.None);
+            MaybeShowStatusNotification(previousStatus, result.Status, result.Description);
+        }
+
+        UpdateDashboard(_lastSnapshot, result);
+    }
+
     private void SaveSettingsFromUi()
     {
         _settings.IntervalSeconds = ParseInt(IntervalTextBox.Text, 5, 1, 3600);
@@ -290,6 +394,7 @@ public partial class MainWindow : Window
         _settings.ExpectedPublicIPv4 = SplitValues(ExpectedIpsTextBox.Text);
         _settings.TreatUnexpectedIPv4AsLeakRisk = IpRiskCheckBox.IsChecked == true;
         _settings.AllowIpChangesWithinExpectedCountry = AllowIpChangesCheckBox.IsChecked == true;
+        _settings.RouteMode = GetSelectedRouteMode();
         _settings.ExpectedInterfaceName = (ExpectedInterfaceBox.Text ?? string.Empty).Trim();
         _settings.TreatDefaultRouteChangeAsLeakRisk = RouteRiskCheckBox.IsChecked == true;
         _settings.EnableIPv6LeakCheck = Ipv6CheckBox.IsChecked == true;
@@ -327,6 +432,7 @@ public partial class MainWindow : Window
         ExpectedIpsTextBox.Text = string.Join(Environment.NewLine, _settings.ExpectedPublicIPv4);
         IpRiskCheckBox.IsChecked = _settings.TreatUnexpectedIPv4AsLeakRisk;
         AllowIpChangesCheckBox.IsChecked = _settings.AllowIpChangesWithinExpectedCountry;
+        SetSelectedRouteMode(_settings.RouteMode ?? VpnRouteMode.SeparateAdapter);
         ExpectedInterfaceBox.Text = GetExpectedInterfaceName(_settings);
         RouteRiskCheckBox.IsChecked = _settings.TreatDefaultRouteChangeAsLeakRisk;
         Ipv6CheckBox.IsChecked = _settings.EnableIPv6LeakCheck;
@@ -349,6 +455,58 @@ public partial class MainWindow : Window
         LogsFolderTextBox.Text = _settings.LogsFolderPath;
         AutosaveLogsCheckBox.IsChecked = _settings.AutosaveLogs;
         BaselineText.Text = FormatBaseline(_settings.Baseline);
+        UpdateRouteModeControls();
+    }
+
+    private void RouteModeBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        UpdateRouteModeControls();
+    }
+
+    private void ReconfigureRouteButton_Click(object sender, RoutedEventArgs e)
+    {
+        MainTabs.SelectedItem = SettingsTab;
+        RouteModeBox.Focus();
+    }
+
+    private VpnRouteMode GetSelectedRouteMode()
+    {
+        if (RouteModeBox.SelectedItem is System.Windows.Controls.ComboBoxItem item
+            && Enum.TryParse<VpnRouteMode>(item.Tag?.ToString(), out var mode))
+        {
+            return mode;
+        }
+
+        return VpnRouteMode.SeparateAdapter;
+    }
+
+    private void SetSelectedRouteMode(VpnRouteMode mode)
+    {
+        foreach (var item in RouteModeBox.Items.OfType<System.Windows.Controls.ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.Ordinal))
+            {
+                RouteModeBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        RouteModeBox.SelectedIndex = 0;
+    }
+
+    private void UpdateRouteModeControls()
+    {
+        if (ExpectedInterfaceBox is null || RouteRiskCheckBox is null || RouteModeHintText is null)
+        {
+            return;
+        }
+
+        var usesAdapter = GetSelectedRouteMode() == VpnRouteMode.SeparateAdapter;
+        ExpectedInterfaceBox.IsEnabled = usesAdapter;
+        RouteRiskCheckBox.IsEnabled = usesAdapter;
+        RouteModeHintText.Text = usesAdapter
+            ? "Выбери адаптер именно своего VPN. Поле «Активный интерфейс» на Сводке остаётся фактом Windows."
+            : "Default route останется на Wi-Fi/Ethernet. Маршрут не проверяется; включи риск по стране и/или ASN/провайдеру.";
     }
 
     private async Task MonitorLoopAsync(CancellationToken cancellationToken)
@@ -410,8 +568,7 @@ public partial class MainWindow : Window
             _lastSnapshot = snapshot;
             _rollingWindow.Add(snapshot);
 
-            await BackfillExpectedInterfaceAsync(snapshot, cancellationToken);
-            var result = HealthEvaluator.Evaluate(snapshot, _rollingWindow, _settings);
+            var result = HealthEvaluator.Evaluate(snapshot, _rollingWindow, _settings, _routeCheckContext);
             await HandleResultAsync(trigger, snapshot, result, cancellationToken);
             UpdateDashboard(snapshot, result);
             await MaybeRefreshProtectedOnChangeAsync();
@@ -662,10 +819,18 @@ public partial class MainWindow : Window
         ExpectedIpText.Text = _settings.ExpectedPublicIPv4.Count == 0
             ? "Не задано"
             : string.Join(", ", _settings.ExpectedPublicIPv4);
-        ExpectedInterfaceText.Text = string.IsNullOrWhiteSpace(GetExpectedInterfaceName(_settings))
-            ? "Не задано"
-            : GetExpectedInterfaceName(_settings);
-        UpdateRouteCheckText(result?.RouteCheck ?? HealthEvaluator.GetRouteCheckState(_settings));
+        var routeState = result?.RouteCheck ?? HealthEvaluator.GetRouteCheckState(_settings, _routeCheckContext);
+        var expectedInterface = GetExpectedInterfaceName(_settings);
+        ExpectedInterfaceText.Text = _settings.RouteMode == VpnRouteMode.NoSeparateAdapter
+            ? "Не используется — режим без отдельного адаптера"
+            : string.IsNullOrWhiteSpace(expectedInterface)
+                ? "Не задано"
+                : routeState == RouteCheckState.NeedsConfiguration
+                    ? $"{expectedInterface} — не найден в Windows"
+                    : expectedInterface;
+        UpdateRouteCheckText(
+            routeState,
+            result?.ExitCheck ?? HealthEvaluator.GetExitCheckState(_settings));
         LastSuccessText.Text = _lastSuccessfulCheckAt.HasValue ? FormatTime(_lastSuccessfulCheckAt.Value) : "Никогда";
         LastIpChangeText.Text = _lastIpChangeAt.HasValue ? FormatTime(_lastIpChangeAt.Value) : "Никогда";
         BaselineText.Text = FormatBaseline(_settings.Baseline);
@@ -714,6 +879,7 @@ public partial class MainWindow : Window
             MonitorStatus.IpChanged => new SolidColorBrush(System.Windows.Media.Color.FromRgb(199, 128, 27)),
             MonitorStatus.CountryChanged => new SolidColorBrush(System.Windows.Media.Color.FromRgb(199, 128, 27)),
             MonitorStatus.CountryUnknown => new SolidColorBrush(System.Windows.Media.Color.FromRgb(96, 106, 118)),
+            MonitorStatus.ConfigurationRequired => new SolidColorBrush(System.Windows.Media.Color.FromRgb(199, 128, 27)),
             MonitorStatus.Degraded => new SolidColorBrush(System.Windows.Media.Color.FromRgb(151, 117, 22)),
             MonitorStatus.CheckFailed => new SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 91, 166)),
             _ => new SolidColorBrush(System.Windows.Media.Color.FromRgb(96, 106, 118))
@@ -902,6 +1068,7 @@ public partial class MainWindow : Window
             MonitorStatus.Degraded
                 or MonitorStatus.IpChanged
                 or MonitorStatus.CountryChanged
+                or MonitorStatus.ConfigurationRequired
                 or MonitorStatus.CheckFailed => TrayIconKind.Yellow,
             _ => TrayIconKind.Gray
         };
@@ -1010,42 +1177,13 @@ public partial class MainWindow : Window
         return string.Join(" / ", parts);
     }
 
-    private async Task BackfillExpectedInterfaceAsync(NetworkSnapshot snapshot, CancellationToken cancellationToken)
-    {
-        if (!_settings.TreatDefaultRouteChangeAsLeakRisk
-            || !string.IsNullOrWhiteSpace(GetExpectedInterfaceName(_settings))
-            || !SnapshotMatchesExpectedCountry(snapshot)
-            || !VpnInterfaceHeuristics.LooksLikeVpn(snapshot.InterfaceName))
-        {
-            return;
-        }
-
-        _settings.ExpectedInterfaceName = snapshot.InterfaceName ?? string.Empty;
-        if (_settings.Baseline is not null && string.IsNullOrWhiteSpace(_settings.Baseline.InterfaceName))
-        {
-            _settings.Baseline.InterfaceName = snapshot.InterfaceName;
-        }
-
-        await _settingsService.SaveAsync(_settings, cancellationToken);
-        UpdateSettingsControls();
-    }
-
-    private bool SnapshotMatchesExpectedCountry(NetworkSnapshot snapshot)
-    {
-        if (string.IsNullOrWhiteSpace(_settings.ExpectedCountry)
-            || string.IsNullOrWhiteSpace(snapshot.Country))
-        {
-            return false;
-        }
-
-        return string.Equals(
-            CountryNames.NormalizeCountryCode(_settings.ExpectedCountry),
-            CountryNames.NormalizeCountryCode(snapshot.Country),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
     private static string GetExpectedInterfaceName(AppSettings settings)
     {
+        if (settings.RouteMode == VpnRouteMode.NoSeparateAdapter)
+        {
+            return string.Empty;
+        }
+
         return !string.IsNullOrWhiteSpace(settings.ExpectedInterfaceName)
             ? settings.ExpectedInterfaceName
             : settings.Baseline?.InterfaceName ?? string.Empty;
@@ -1081,20 +1219,39 @@ public partial class MainWindow : Window
         }
     }
 
-    private void UpdateRouteCheckText(RouteCheckState state)
+    private void UpdateRouteCheckText(RouteCheckState state, VpnExitCheckState exitCheck)
     {
         RouteCheckText.Text = state switch
         {
             RouteCheckState.Active => "Активна — маршрут сравнивается с VPN-адаптером.",
+            RouteCheckState.NeedsConfiguration =>
+                "ТРЕБУЕТ НАСТРОЙКИ: сохранённый VPN-адаптер отсутствует в Windows или больше не подходит. "
+                + "Это не доказанная утечка — выбери текущий режим VPN и адаптер.",
             RouteCheckState.NotApplicable =>
-                "НЕ применима: ожидаемый интерфейс не похож на VPN-адаптер. В режиме системного прокси default route не меняется, "
-                + "и эта проверка не сработает ни при каком состоянии VPN — полагайся на страну и внешний IP.",
+                "НЕ применима: выбран режим без отдельного VPN-адаптера. Windows законно оставляет default route на Wi-Fi/Ethernet.",
             _ => "Выключена в настройках."
         };
 
-        RouteCheckText.Foreground = state == RouteCheckState.NotApplicable
+        var warning = state == RouteCheckState.NeedsConfiguration
+            || (state == RouteCheckState.NotApplicable && exitCheck == VpnExitCheckState.NotConfigured);
+        RouteCheckText.Foreground = warning
             ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB3, 0x47, 0x00))
             : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x22, 0x26, 0x2C));
+
+        ReconfigureRouteButton.Content = state == RouteCheckState.NeedsConfiguration
+            ? "Перенастроить маршрут"
+            : "Настроить маршрут";
+
+        VpnExitControlText.Text = exitCheck == VpnExitCheckState.Configured
+            ? "Активен — прямой выход проверяется по стране, ASN/провайдеру или строгому списку IP."
+            : _settings.RouteMode == VpnRouteMode.NoSeparateAdapter
+                ? "VPN ФАКТИЧЕСКИ НЕ КОНТРОЛИРУЕТСЯ: включи риск по стране и/или ASN/провайдеру."
+                : "Дополнительный контроль выхода не настроен; в режиме с адаптером маршрут проверяется отдельно.";
+
+        VpnExitControlText.Foreground = exitCheck == VpnExitCheckState.NotConfigured
+            && _settings.RouteMode == VpnRouteMode.NoSeparateAdapter
+                ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB3, 0x47, 0x00))
+                : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x22, 0x26, 0x2C));
     }
 
     /// <summary>Fills the expected-interface dropdown with the machine's real adapters, keeping any manual text.</summary>
@@ -1103,6 +1260,14 @@ public partial class MainWindow : Window
         try
         {
             var inventory = await _adapterInventory.ReadAsync(CancellationToken.None);
+            _adapterInventoryResult = inventory;
+            _routeCheckContext = new RouteCheckContext(
+                true,
+                inventory.Adapters
+                    .SelectMany(adapter => new[] { adapter.Name, adapter.DisplayName })
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList());
             var current = ExpectedInterfaceBox.Text;
             ExpectedInterfaceBox.ItemsSource = inventory.Adapters
                 .Select(adapter => adapter.DisplayName)
@@ -1112,10 +1277,21 @@ public partial class MainWindow : Window
         }
         catch (Exception)
         {
+            _adapterInventoryResult = null;
+            _routeCheckContext = RouteCheckContext.Unknown;
             // Manual entry stays available — the dropdown is a convenience, not a requirement.
         }
 
         UpdateBlockedAdaptersText();
+    }
+
+    private string? FindSuggestedVpnAdapter()
+    {
+        return _adapterInventoryResult?.Adapters
+            .Where(adapter => VpnInterfaceHeuristics.LooksLikeVpn(adapter.DisplayName))
+            .OrderByDescending(adapter => string.Equals(adapter.Status, "Up", StringComparison.OrdinalIgnoreCase))
+            .Select(adapter => adapter.DisplayName)
+            .FirstOrDefault();
     }
 
     private void UpdateBlockedAdaptersText()
