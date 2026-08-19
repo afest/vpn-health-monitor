@@ -4,7 +4,7 @@
 ; быть свежей — установщик просто берёт всё из ..\publish\win-x64\.
 
 #define MyAppName "VPN Health Monitor"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.2"
 #define MyAppExeName "VpnHealthMonitor.exe"
 #define MyPublishDir "..\publish\win-x64"
 
