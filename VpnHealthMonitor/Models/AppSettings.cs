@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VpnHealthMonitor.Models;
 
 public sealed class AppSettings
@@ -16,6 +18,14 @@ public sealed class AppSettings
     public bool AllowIpChangesWithinExpectedCountry { get; set; } = true;
 
     public string ExpectedInterfaceName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// How this VPN integrates with Windows routing. Null means a legacy settings file written before
+    /// the explicit choice existed. Legacy configuration is accepted as a tunnel only when the saved
+    /// VPN-looking interface is still present in the live adapter inventory.
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public VpnRouteMode? RouteMode { get; set; }
 
     public bool TreatDefaultRouteChangeAsLeakRisk { get; set; } = true;
 
@@ -116,6 +126,15 @@ public sealed class AppSettings
         MonitorStatus.CountryChanged => NotifyCountryChanged,
         _ => true
     };
+}
+
+public enum VpnRouteMode
+{
+    /// <summary>The VPN owns a real TUN/TAP/WireGuard adapter and the default route must stay on it.</summary>
+    SeparateAdapter,
+
+    /// <summary>The VPN works through a proxy/WFP/redirect mechanism and Windows keeps the physical route.</summary>
+    NoSeparateAdapter
 }
 
 /// <summary>A provider the user accepts as their VPN exit: ASN, organisation name, or both.</summary>

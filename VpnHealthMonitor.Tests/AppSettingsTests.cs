@@ -67,4 +67,25 @@ public class AppSettingsTests
         Assert.True(settings!.NotifyCountryChanged);
         Assert.False(settings.NotifyIpChanged);
     }
+
+    [Fact]
+    public void LegacySettingsJson_WithoutRouteMode_RemainsDetectableForMigration()
+    {
+        const string legacyJson = "{ \"ExpectedInterfaceName\": \"Karing TUN Network Adapter\" }";
+
+        var settings = JsonSerializer.Deserialize<AppSettings>(legacyJson);
+
+        Assert.NotNull(settings);
+        Assert.Null(settings!.RouteMode);
+    }
+
+    [Fact]
+    public void RouteMode_SerializesAsReadableString()
+    {
+        var json = JsonSerializer.Serialize(new AppSettings { RouteMode = VpnRouteMode.NoSeparateAdapter });
+        var restored = JsonSerializer.Deserialize<AppSettings>(json);
+
+        Assert.Contains("\"RouteMode\":\"NoSeparateAdapter\"", json);
+        Assert.Equal(VpnRouteMode.NoSeparateAdapter, restored!.RouteMode);
+    }
 }

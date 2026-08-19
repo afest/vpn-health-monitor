@@ -13,6 +13,7 @@ public class ProviderRiskTests
 {
     private static AppSettings Settings(bool enabled = true, params string[] allowed) => new()
     {
+        RouteMode = VpnRouteMode.NoSeparateAdapter,
         TreatProviderChangeAsLeakRisk = enabled,
         AllowedProviders = allowed.Select(ProviderMatcher.ParseIdentity).Where(p => p is not null).Select(p => p!).ToList()
     };

@@ -9,6 +9,7 @@ public enum MonitorStatus
     IpChanged,
     CountryChanged,
     CountryUnknown,
+    ConfigurationRequired,
     Degraded,
     CheckFailed,
     VpnDown
@@ -26,6 +27,7 @@ public static class MonitorStatusExtensions
             MonitorStatus.IpChanged => "IP ИЗМЕНИЛСЯ",
             MonitorStatus.CountryChanged => "СТРАНА ИЗМЕНИЛАСЬ",
             MonitorStatus.CountryUnknown => "СТРАНА НЕ ОПРЕДЕЛЕНА",
+            MonitorStatus.ConfigurationRequired => "НУЖНА НАСТРОЙКА",
             MonitorStatus.Degraded => "СЕТЬ ПРОСЕЛА",
             MonitorStatus.CheckFailed => "ПРОВЕРКА НЕ УДАЛАСЬ",
             MonitorStatus.VpnDown => "VPN ОТКЛЮЧЁН",

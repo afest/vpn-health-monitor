@@ -5,35 +5,82 @@ namespace VpnHealthMonitor.Services;
 public static class HealthEvaluator
 {
     /// <summary>
-    /// Does the "VPN route" risk check actually guard anything (T-323)? Enabled + a VPN-looking expected
-    /// interface = it can fire. Enabled against an empty or non-VPN interface (system-proxy mode keeps the
-    /// default route on Wi-Fi forever) = it can never fire, and the UI must say so instead of showing green.
+    /// Does the "VPN route" risk check actually guard anything (T-323/T-391)? Explicit no-adapter mode is
+    /// not applicable. Separate-adapter mode is active only with a configured adapter that still exists in
+    /// the live Windows inventory; a missing post-reinstall baseline needs configuration, not a leak verdict.
     /// </summary>
-    public static RouteCheckState GetRouteCheckState(AppSettings settings)
+    public static RouteCheckState GetRouteCheckState(AppSettings settings, RouteCheckContext? context = null)
     {
+        if (settings.RouteMode == VpnRouteMode.NoSeparateAdapter)
+        {
+            return RouteCheckState.NotApplicable;
+        }
+
         if (!settings.TreatDefaultRouteChangeAsLeakRisk)
         {
             return RouteCheckState.Disabled;
         }
 
         var expected = GetExpectedInterfaceName(settings);
-        return VpnInterfaceHeuristics.LooksLikeVpn(expected)
-            ? RouteCheckState.Active
-            : RouteCheckState.NotApplicable;
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            return RouteCheckState.NeedsConfiguration;
+        }
+
+        // A legacy settings file has no explicit mode. Preserve a real VPN-looking adapter, but never
+        // reinterpret a physical Wi-Fi/Ethernet baseline as a useful tunnel check.
+        if (settings.RouteMode is null && !VpnInterfaceHeuristics.LooksLikeVpn(expected))
+        {
+            return RouteCheckState.NeedsConfiguration;
+        }
+
+        context ??= RouteCheckContext.Unknown;
+        if (context.InventoryAvailable && !context.Contains(expected))
+        {
+            return RouteCheckState.NeedsConfiguration;
+        }
+
+        return RouteCheckState.Active;
     }
 
-    public static HealthResult Evaluate(NetworkSnapshot snapshot, RollingHealthWindow rolling, AppSettings settings)
+    public static HealthResult Evaluate(
+        NetworkSnapshot snapshot,
+        RollingHealthWindow rolling,
+        AppSettings settings,
+        RouteCheckContext? routeContext = null)
     {
-        var result = EvaluateStatus(snapshot, rolling, settings);
+        var routeCheck = GetRouteCheckState(settings, routeContext);
+        var result = EvaluateStatus(snapshot, rolling, settings, routeCheck);
         return new HealthResult
         {
             Status = result.Status,
             Description = result.Description,
-            RouteCheck = GetRouteCheckState(settings)
+            RouteCheck = routeCheck,
+            ExitCheck = GetExitCheckState(settings)
         };
     }
 
-    private static HealthResult EvaluateStatus(NetworkSnapshot snapshot, RollingHealthWindow rolling, AppSettings settings)
+    public static VpnExitCheckState GetExitCheckState(AppSettings settings)
+    {
+        var countrySignal = settings.TreatCountryMismatchAsLeakRisk
+            && !string.IsNullOrWhiteSpace(settings.ExpectedCountry);
+        var providerSignal = settings.TreatProviderChangeAsLeakRisk
+            && settings.AllowedProviders.Count > 0;
+        var fixedIpSignal = settings.TreatUnexpectedIPv4AsLeakRisk
+            && (settings.ExpectedPublicIPv4.Count > 0
+                || (!settings.AllowIpChangesWithinExpectedCountry
+                    && !string.IsNullOrWhiteSpace(settings.Baseline?.IPv4)));
+
+        return countrySignal || providerSignal || fixedIpSignal
+            ? VpnExitCheckState.Configured
+            : VpnExitCheckState.NotConfigured;
+    }
+
+    private static HealthResult EvaluateStatus(
+        NetworkSnapshot snapshot,
+        RollingHealthWindow rolling,
+        AppSettings settings,
+        RouteCheckState routeCheck)
     {
         var internetAvailable = snapshot.HttpAvailable || snapshot.PingSuccesses > 0;
         var expectedCountryIsSet = !string.IsNullOrWhiteSpace(settings.ExpectedCountry);
@@ -47,7 +94,7 @@ public static class HealthEvaluator
             && !settings.AllowExternalIPv6
             && !string.IsNullOrWhiteSpace(snapshot.ExternalIPv6);
         var expectedInterfaceName = GetExpectedInterfaceName(settings);
-        var defaultRouteMismatch = settings.TreatDefaultRouteChangeAsLeakRisk
+        var defaultRouteMismatch = routeCheck == RouteCheckState.Active
             && !string.IsNullOrWhiteSpace(expectedInterfaceName)
             && !InterfaceMatches(expectedInterfaceName, snapshot.InterfaceName);
 
@@ -133,6 +180,22 @@ public static class HealthEvaluator
             && !settings.AllowIpChangesWithinExpectedCountry)
         {
             return Result(MonitorStatus.LeakRisk, "Внешний IPv4 изменился, а смена IP запрещена настройками.");
+        }
+
+        if (routeCheck == RouteCheckState.NeedsConfiguration
+            && (settings.RouteMode is not null || !string.IsNullOrWhiteSpace(expectedInterfaceName)))
+        {
+            return Result(
+                MonitorStatus.ConfigurationRequired,
+                "Сохранённый VPN-интерфейс больше не найден в Windows. Выберите текущий режим VPN и, если он создаёт TUN/TAP/WireGuard, его адаптер.");
+        }
+
+        if (routeCheck == RouteCheckState.NotApplicable
+            && GetExitCheckState(settings) == VpnExitCheckState.NotConfigured)
+        {
+            return Result(
+                MonitorStatus.ConfigurationRequired,
+                "Режим без отдельного адаптера выбран, но выход через VPN пока нечем отличить от прямого подключения. Настройте ожидаемую страну, провайдера/ASN или IPv4.");
         }
 
         var rollingPing = rolling.AveragePingMs;
@@ -224,6 +287,11 @@ public static class HealthEvaluator
 
     private static string GetExpectedInterfaceName(AppSettings settings)
     {
+        if (settings.RouteMode == VpnRouteMode.NoSeparateAdapter)
+        {
+            return string.Empty;
+        }
+
         return !string.IsNullOrWhiteSpace(settings.ExpectedInterfaceName)
             ? settings.ExpectedInterfaceName
             : settings.Baseline?.InterfaceName ?? string.Empty;
