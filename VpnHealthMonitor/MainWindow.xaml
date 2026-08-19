@@ -807,6 +807,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Интервал, сек" ToolTip="Пауза между автоматическими проверками при включенном мониторинге." />
@@ -884,31 +885,48 @@
                         <TextBlock Grid.Row="13" Grid.Column="0" Style="{StaticResource LabelText}" Text="Закрывать в трей" ToolTip="Если мониторинг запущен, закрытие окна спрячет его в tray, а не остановит мониторинг." />
                         <CheckBox x:Name="MinimizeToTrayCheckBox" Grid.Row="13" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
 
-                        <TextBlock Grid.Row="14" Grid.Column="0" Style="{StaticResource LabelText}" Text="IPv4/API endpoint'ы" ToolTip="Сервисы для получения внешнего IPv4 и geo. Используются с fallback, не один-единственный источник." />
+                        <TextBlock Grid.Row="14" Grid.Column="0" Style="{StaticResource LabelText}" Text="Запуск с Windows" ToolTip="Автозапуск приложения и поведение при старте. Все три выключены по умолчанию: приложение ничего не прописывает в системе, пока не попросят." />
+                        <StackPanel Grid.Row="14" Grid.Column="1" Margin="0,4,0,12">
+                            <CheckBox x:Name="LaunchWithWindowsCheckBox" Content="Запускать вместе с Windows"
+                                      Checked="LaunchWithWindowsCheckBox_Changed" Unchecked="LaunchWithWindowsCheckBox_Changed"
+                                      ToolTip="Пишет путь к .exe в HKCU\Software\Microsoft\Windows\CurrentVersion\Run. Снятие галки запись удаляет. Прав администратора не требует." />
+                            <CheckBox x:Name="StartMonitoringOnLaunchCheckBox" Content="Сразу включать мониторинг" Margin="0,6,0,0"
+                                      Checked="StartupOptionCheckBox_Changed" Unchecked="StartupOptionCheckBox_Changed"
+                                      ToolTip="При запуске выполняется то же, что по кнопке «Старт мониторинга»." />
+                            <CheckBox x:Name="StartMinimizedCheckBox" Content="Стартовать свёрнутым в трей" Margin="0,6,0,0"
+                                      Checked="StartupOptionCheckBox_Changed" Unchecked="StartupOptionCheckBox_Changed"
+                                      ToolTip="Окно не показывается, приложение живёт иконкой в трее. Открыть — клик по иконке." />
+                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" TextWrapping="Wrap"
+                                       Text="Тихий старт: при автозапуске мониторинга балуны не приходят, пока не пройдёт первый здоровый цикл или не истекут 90 секунд — VPN-клиент успевает поднять туннель. Статус в окне и цвет иконки в трее настоящие с первой же проверки, а если проблема осталась, после таймаута придёт обычный сигнал." />
+                            <TextBlock x:Name="AutostartHintText" Style="{StaticResource LabelText}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                       Text="Состояние реестра проверяется при загрузке настроек." />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="15" Grid.Column="0" Style="{StaticResource LabelText}" Text="IPv4/API endpoint'ы" ToolTip="Сервисы для получения внешнего IPv4 и geo. Используются с fallback, не один-единственный источник." />
                         <TextBox x:Name="IpApiEndpointsTextBox"
-                                 Grid.Row="14"
+                                 Grid.Row="15"
                                  Grid.Column="1"
                                  AcceptsReturn="True"
                                  MinHeight="96"
                                  VerticalScrollBarVisibility="Auto" />
 
-                        <TextBlock Grid.Row="15" Grid.Column="0" Style="{StaticResource LabelText}" Text="Порог ping, ms" ToolTip="Порог среднего ping. Если выше, статус станет «СЕТЬ ПРОСЕЛА» при корректном IP." />
-                        <TextBox x:Name="PingThresholdTextBox" Grid.Row="15" Grid.Column="1" Text="250" />
+                        <TextBlock Grid.Row="16" Grid.Column="0" Style="{StaticResource LabelText}" Text="Порог ping, ms" ToolTip="Порог среднего ping. Если выше, статус станет «СЕТЬ ПРОСЕЛА» при корректном IP." />
+                        <TextBox x:Name="PingThresholdTextBox" Grid.Row="16" Grid.Column="1" Text="250" />
 
-                        <TextBlock Grid.Row="16" Grid.Column="0" Style="{StaticResource LabelText}" Text="Порог потерь, %" ToolTip="Порог потерь ping. Если выше, статус станет «СЕТЬ ПРОСЕЛА» при корректном IP." />
-                        <TextBox x:Name="LossThresholdTextBox" Grid.Row="16" Grid.Column="1" Text="5" />
+                        <TextBlock Grid.Row="17" Grid.Column="0" Style="{StaticResource LabelText}" Text="Порог потерь, %" ToolTip="Порог потерь ping. Если выше, статус станет «СЕТЬ ПРОСЕЛА» при корректном IP." />
+                        <TextBox x:Name="LossThresholdTextBox" Grid.Row="17" Grid.Column="1" Text="5" />
 
-                        <TextBlock Grid.Row="17" Grid.Column="0" Style="{StaticResource LabelText}" Text="Папка логов" ToolTip="Папка, куда сохраняются локальные JSONL-логи событий." />
-                        <TextBox x:Name="LogsFolderTextBox" Grid.Row="17" Grid.Column="1" />
+                        <TextBlock Grid.Row="18" Grid.Column="0" Style="{StaticResource LabelText}" Text="Папка логов" ToolTip="Папка, куда сохраняются локальные JSONL-логи событий." />
+                        <TextBox x:Name="LogsFolderTextBox" Grid.Row="18" Grid.Column="1" />
 
-                        <TextBlock Grid.Row="18" Grid.Column="0" Style="{StaticResource LabelText}" Text="Автосохранение логов" ToolTip="Если включено, события мониторинга автоматически записываются в JSONL-файл." />
-                        <CheckBox x:Name="AutosaveLogsCheckBox" Grid.Row="18" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
+                        <TextBlock Grid.Row="19" Grid.Column="0" Style="{StaticResource LabelText}" Text="Автосохранение логов" ToolTip="Если включено, события мониторинга автоматически записываются в JSONL-файл." />
+                        <CheckBox x:Name="AutosaveLogsCheckBox" Grid.Row="19" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
 
-                        <TextBlock Grid.Row="19" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по провайдеру" ToolTip="Если включено, выход через провайдера вне списка разрешённых даст «РИСК УТЕЧКИ». Единственная проверка, которая работает, когда VPN выходит в твоей же стране: при обрыве туннеля провайдер становится домашним. Если список пуст или провайдер не определён — проверка молчит." />
-                        <CheckBox x:Name="ProviderRiskCheckBox" Grid.Row="19" Grid.Column="1" Margin="0,4,0,12" />
+                        <TextBlock Grid.Row="20" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по провайдеру" ToolTip="Если включено, выход через провайдера вне списка разрешённых даст «РИСК УТЕЧКИ». Единственная проверка, которая работает, когда VPN выходит в твоей же стране: при обрыве туннеля провайдер становится домашним. Если список пуст или провайдер не определён — проверка молчит." />
+                        <CheckBox x:Name="ProviderRiskCheckBox" Grid.Row="20" Grid.Column="1" Margin="0,4,0,12" />
 
-                        <TextBlock Grid.Row="20" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешённые провайдеры" ToolTip="Провайдеры, которые считаются «это по-прежнему мой VPN»: имя организации, ASN или «Имя (ASNxxxx)» — по одному в строке. Кнопка baseline добавляет текущего автоматически. Если VPN переключается между хостерами, добавь их все." />
-                        <StackPanel Grid.Row="20" Grid.Column="1">
+                        <TextBlock Grid.Row="21" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешённые провайдеры" ToolTip="Провайдеры, которые считаются «это по-прежнему мой VPN»: имя организации, ASN или «Имя (ASNxxxx)» — по одному в строке. Кнопка baseline добавляет текущего автоматически. Если VPN переключается между хостерами, добавь их все." />
+                        <StackPanel Grid.Row="21" Grid.Column="1">
                             <TextBox x:Name="AllowedProvidersTextBox"
                                      AcceptsReturn="True"
                                      MinHeight="72"
@@ -917,23 +935,23 @@
                                     Click="AddCurrentProviderButton_Click" />
                         </StackPanel>
 
-                        <TextBlock Grid.Row="21" Grid.Column="0" Style="{StaticResource LabelText}" Text="HTTP-пробы доступности" ToolTip="Адреса, по которым проверяется «есть ли интернет вообще». Если в твоей сети заблокированы Google и Cloudflare — замени их на доступные. Пустое поле вернёт значения по умолчанию." />
+                        <TextBlock Grid.Row="22" Grid.Column="0" Style="{StaticResource LabelText}" Text="HTTP-пробы доступности" ToolTip="Адреса, по которым проверяется «есть ли интернет вообще». Если в твоей сети заблокированы Google и Cloudflare — замени их на доступные. Пустое поле вернёт значения по умолчанию." />
                         <TextBox x:Name="HttpProbesTextBox"
-                                 Grid.Row="21"
+                                 Grid.Row="22"
                                  Grid.Column="1"
                                  AcceptsReturn="True"
                                  MinHeight="72"
                                  VerticalScrollBarVisibility="Auto" />
 
-                        <TextBlock Grid.Row="22" Grid.Column="0" Style="{StaticResource LabelText}" Text="Хосты для ping" ToolTip="Адреса для ICMP-проверки задержки и потерь. Пустое поле вернёт значения по умолчанию." />
+                        <TextBlock Grid.Row="23" Grid.Column="0" Style="{StaticResource LabelText}" Text="Хосты для ping" ToolTip="Адреса для ICMP-проверки задержки и потерь. Пустое поле вернёт значения по умолчанию." />
                         <TextBox x:Name="PingHostsTextBox"
-                                 Grid.Row="22"
+                                 Grid.Row="23"
                                  Grid.Column="1"
                                  AcceptsReturn="True"
                                  MinHeight="52"
                                  VerticalScrollBarVisibility="Auto" />
 
-                        <StackPanel Grid.Row="23" Grid.Column="1" Orientation="Horizontal">
+                        <StackPanel Grid.Row="24" Grid.Column="1" Orientation="Horizontal">
                             <Button Content="Сохранить настройки" Style="{StaticResource PrimaryButton}" Click="SaveSettingsButton_Click" />
                             <Button Content="Перезагрузить настройки" Click="ReloadSettingsButton_Click" />
                         </StackPanel>

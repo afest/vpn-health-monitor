@@ -69,6 +69,18 @@ public sealed class AppSettings
 
     public bool MinimizeToTrayOnClose { get; set; } = true;
 
+    /// <summary>
+    /// Запуск вместе с Windows: значение в HKCU\...\Run. Выключено по умолчанию — приложение,
+    /// поставленное заново, ничего в системе не трогает, пока не попросят.
+    /// </summary>
+    public bool LaunchWithWindows { get; set; }
+
+    /// <summary>Включать мониторинг сразу при запуске, без нажатия «Старт мониторинга».</summary>
+    public bool StartMonitoringOnLaunch { get; set; }
+
+    /// <summary>Стартовать без окна, одной иконкой в трее.</summary>
+    public bool StartMinimizedToTray { get; set; }
+
     public List<string> IpApiEndpoints { get; set; } = new()
     {
         "https://api.ipify.org?format=json",

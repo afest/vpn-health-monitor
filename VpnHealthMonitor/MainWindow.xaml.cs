@@ -33,6 +33,8 @@ public partial class MainWindow : Window
     private readonly FirewallService _firewallService = new();
     private readonly AppxPathResolver _appxResolver = new();
     private readonly AdapterInventory _adapterInventory = new();
+    private readonly AutostartService _autostartService = new();
+    private readonly QuietStartGate _quietStart = new();
     private readonly RollingHealthWindow _rollingWindow = new(20);
     private readonly ObservableCollection<MonitorEvent> _events = new();
     private readonly ObservableCollection<ProtectedAppRow> _protectedAppRows = new();
@@ -60,6 +62,7 @@ public partial class MainWindow : Window
     private bool? _internetWasAvailable;
     private bool _exitRequested;
     private bool _uiReady;
+    private bool _suppressStartupOptionEvents;
     private bool _networkWarningShown;
     private bool _eventsDetailed;
 
@@ -82,6 +85,14 @@ public partial class MainWindow : Window
         await RefreshAdapterChoicesAsync();
         UpdateDashboard(_lastSnapshot, null);
         _uiReady = true;
+
+        if (_settings.StartMonitoringOnLaunch)
+        {
+            // Тихий старт заводится ТОЛЬКО здесь: ручной «Старт мониторинга» его не включает,
+            // там человек смотрит на экран и ждёт ответа сразу.
+            _quietStart.Begin(DateTimeOffset.Now);
+            await StartMonitoringAsync("мониторинг запущен автоматически при старте приложения");
+        }
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -94,7 +105,8 @@ public partial class MainWindow : Window
                 "VPN Health Monitor",
                 "Окно скрыто в tray, мониторинг продолжает работу.",
                 Forms.ToolTipIcon.Info,
-                bypassCooldown: true);
+                bypassCooldown: true,
+                respectQuietStart: false);
             return;
         }
 
@@ -124,12 +136,101 @@ public partial class MainWindow : Window
         }
 
         await SaveSettingsFromUiAsync();
+
+        // Ручной запуск тихим стартом не глушится, даже если тот идёт с автозапуска: человек нажал
+        // кнопку и ждёт ответа сейчас.
+        _quietStart.Cancel();
+        await StartMonitoringAsync("мониторинг запущен");
+    }
+
+    /// <summary>
+    /// Галка «запускать вместе с Windows» правит реестр сразу: она описывает состояние системы, а не
+    /// значение в файле, и расхождение между галкой и HKCU было бы враньём в интерфейсе.
+    /// </summary>
+    private async void LaunchWithWindowsCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _suppressStartupOptionEvents)
+        {
+            return;
+        }
+
+        var wanted = LaunchWithWindowsCheckBox.IsChecked == true;
+
+        try
+        {
+            _autostartService.Apply(wanted);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                $"Не удалось изменить автозапуск: {ex.Message}",
+                "VPN Health Monitor",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+
+            // Галку возвращаем к тому, что реально в реестре, а не к тому, что нажали.
+            _suppressStartupOptionEvents = true;
+            try
+            {
+                LaunchWithWindowsCheckBox.IsChecked = _autostartService.IsEnabled();
+            }
+            finally
+            {
+                _suppressStartupOptionEvents = false;
+            }
+
+            UpdateAutostartHint();
+            return;
+        }
+
+        UpdateAutostartHint();
+        await SaveSettingsFromUiAsync();
+    }
+
+    /// <summary>
+    /// «Сразу включать мониторинг» и «стартовать свёрнутым» сохраняются по клику, без кнопки
+    /// «Сохранить настройки»: проверяются они перезагрузкой, и молча не сохранённая галка выглядит
+    /// как сломанная функция.
+    /// </summary>
+    private async void StartupOptionCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _suppressStartupOptionEvents)
+        {
+            return;
+        }
+
+        await SaveSettingsFromUiAsync();
+    }
+
+    /// <summary>Что сейчас в HKCU: подпись под галкой отвечает на «а оно точно прописалось?».</summary>
+    private void UpdateAutostartHint()
+    {
+        if (_autostartService.IsEnabled())
+        {
+            AutostartHintText.Text = $"В реестре: HKCU\\{AutostartService.RunKeyPath} → «{AutostartService.ValueName}» = {AutostartService.BuildCommand(AutostartService.CurrentExecutablePath)}";
+            return;
+        }
+
+        AutostartHintText.Text = _autostartService.IsRegisteredForOtherPath()
+            ? $"В реестре есть запись «{AutostartService.ValueName}», но она указывает на другой файл — вероятно, приложение переставили. Включи галку заново, чтобы перезаписать её на текущий .exe."
+            : $"Записи в HKCU\\{AutostartService.RunKeyPath} нет — Windows приложение сама не запускает.";
+    }
+
+    /// <summary>Общий запуск цикла: кнопкой и автоматически при старте приложения.</summary>
+    private async Task StartMonitoringAsync(string description)
+    {
+        if (_monitoringCts is not null)
+        {
+            return;
+        }
+
         ResetSessionStats();
 
         _monitoringCts = new CancellationTokenSource();
         SetMonitoringState(true);
 
-        await AddEventAsync("мониторинг запущен", _currentStatus, _lastSnapshot, CancellationToken.None);
+        await AddEventAsync(description, _currentStatus, _lastSnapshot, CancellationToken.None);
         _monitoringTask = MonitorLoopAsync(_monitoringCts.Token);
     }
 
@@ -511,6 +612,9 @@ public partial class MainWindow : Window
         _settings.NotifyCountryChanged = NotifyCountryChangedCheckBox.IsChecked == true;
         _settings.NotifyIpChanged = NotifyIpChangedCheckBox.IsChecked == true;
         _settings.MinimizeToTrayOnClose = MinimizeToTrayCheckBox.IsChecked == true;
+        _settings.LaunchWithWindows = LaunchWithWindowsCheckBox.IsChecked == true;
+        _settings.StartMonitoringOnLaunch = StartMonitoringOnLaunchCheckBox.IsChecked == true;
+        _settings.StartMinimizedToTray = StartMinimizedCheckBox.IsChecked == true;
         _settings.IpApiEndpoints = SplitValues(IpApiEndpointsTextBox.Text);
         _settings.DegradedPingThresholdMs = ParseInt(PingThresholdTextBox.Text, 250, 1, 10000);
         _settings.DegradedPacketLossThresholdPercent = ParseDouble(LossThresholdTextBox.Text, 5, 0, 100);
@@ -547,6 +651,22 @@ public partial class MainWindow : Window
         NotifyCountryChangedCheckBox.IsChecked = _settings.NotifyCountryChanged;
         NotifyIpChangedCheckBox.IsChecked = _settings.NotifyIpChanged;
         MinimizeToTrayCheckBox.IsChecked = _settings.MinimizeToTrayOnClose;
+        // Источник истины для автозапуска — реестр, а не settings.json: приложение могли переставить
+        // в другую папку, и запись указывала бы на старый путь. Галка показывает факт системы.
+        _suppressStartupOptionEvents = true;
+        try
+        {
+            _settings.LaunchWithWindows = _autostartService.IsEnabled();
+            LaunchWithWindowsCheckBox.IsChecked = _settings.LaunchWithWindows;
+            StartMonitoringOnLaunchCheckBox.IsChecked = _settings.StartMonitoringOnLaunch;
+            StartMinimizedCheckBox.IsChecked = _settings.StartMinimizedToTray;
+        }
+        finally
+        {
+            _suppressStartupOptionEvents = false;
+        }
+
+        UpdateAutostartHint();
         IpApiEndpointsTextBox.Text = string.Join(Environment.NewLine, _settings.IpApiEndpoints);
         PingThresholdTextBox.Text = _settings.DegradedPingThresholdMs.ToString();
         LossThresholdTextBox.Text = _settings.DegradedPacketLossThresholdPercent.ToString("0.#");
@@ -640,6 +760,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        _quietStart.Cancel();
         _monitoringCts.Cancel();
 
         if (_monitoringTask is not null)
@@ -755,6 +876,18 @@ public partial class MainWindow : Window
         }
 
         _lastIp = snapshot.ExternalIPv4 ?? _lastIp;
+
+        // Гейт отчитывается КАЖДЫЙ цикл и до показа балунов: он сам решает, кончился ли тихий старт,
+        // и снимает глушилку раньше, чем ниже пойдёт обычное уведомление о смене статуса.
+        var quietStartOutcome = _quietStart.ReportCycle(result.Status, DateTimeOffset.Now);
+        if (quietStartOutcome == QuietStartOutcome.ReleasedByTimeout
+            && result.Status.IsProblem()
+            && previousStatus == result.Status)
+        {
+            // Проблема висит с самого старта, статус не менялся — обычный балун «по переходу» не придёт
+            // уже никогда. Тихий старт откладывает сигнал, а не отменяет его.
+            MaybeShowStatusNotification(MonitorStatus.Unknown, result.Status, result.Description);
+        }
 
         if (previousStatus != result.Status)
         {
@@ -1075,7 +1208,7 @@ public partial class MainWindow : Window
         _trayIcons[TrayIconKind.Yellow] = CreateStatusIcon(Drawing.Color.FromArgb(199, 128, 27));
         _trayIcons[TrayIconKind.Red] = CreateStatusIcon(Drawing.Color.FromArgb(180, 67, 45));
 
-        var openItem = new Forms.ToolStripMenuItem("Открыть", null, (_, _) => Dispatcher.Invoke(ShowMainWindow));
+        var openItem = new Forms.ToolStripMenuItem("Открыть", null, (_, _) => Dispatcher.Invoke(RestoreFromTray));
         var exitItem = new Forms.ToolStripMenuItem("Выход", null, (_, _) => Dispatcher.Invoke(RequestExit));
 
         _trayIcon = new Forms.NotifyIcon
@@ -1091,7 +1224,7 @@ public partial class MainWindow : Window
         {
             if (args.Button == Forms.MouseButtons.Left)
             {
-                Dispatcher.Invoke(ShowMainWindow);
+                Dispatcher.Invoke(RestoreFromTray);
             }
         };
     }
@@ -1108,8 +1241,16 @@ public partial class MainWindow : Window
         _trayIcon.Text = TruncateTrayText($"{status.ToDisplayText()} | {ip}");
     }
 
-    private void ShowMainWindow()
+    /// <summary>
+    /// Поднять окно: из трея, из его меню и по сигналу второго экземпляра. Публичный — повторный
+    /// запуск приложения будит уже работающее окно вместо второго трея (см. App.OnStartup).
+    /// </summary>
+    public void RestoreFromTray()
     {
+        // ShowInTaskbar и Visibility возвращаются руками: при старте «свёрнутым в трей» окно было
+        // показано скрытым, и одного Show() тут мало.
+        ShowInTaskbar = true;
+        Visibility = Visibility.Visible;
         Show();
         if (WindowState == WindowState.Minimized)
         {
@@ -1170,13 +1311,25 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <param name="respectQuietStart">
+    /// false — балун показывается даже во время тихого старта. Так помечен ответ на действие человека
+    /// (окно свернулось в трей): он нажал сам и ждёт подтверждения, шумом это не является.
+    /// </param>
     private void ShowNotification(
         string title,
         string message,
         Forms.ToolTipIcon icon,
-        bool bypassCooldown = false)
+        bool bypassCooldown = false,
+        bool respectQuietStart = true)
     {
         if (!_settings.EnableWindowsNotifications || _trayIcon is null)
+        {
+            return;
+        }
+
+        // Глушится ТОЛЬКО доставка. Статус в окне, цвет иконки в трее и запись в лог уже произошли
+        // и остаются настоящими с первого цикла — правило единого вердикта (T-391).
+        if (respectQuietStart && _quietStart.ShouldSuppress(DateTimeOffset.Now))
         {
             return;
         }
