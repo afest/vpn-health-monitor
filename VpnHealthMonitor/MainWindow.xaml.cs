@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
@@ -44,6 +45,9 @@ public partial class MainWindow : Window
     private HashSet<string> _notifiedPathChange = new(StringComparer.OrdinalIgnoreCase);
     private AdapterInventoryResult? _adapterInventoryResult;
     private RouteCheckContext _routeCheckContext = RouteCheckContext.Unknown;
+    private readonly AdapterPresenceTracker _adapterPresence = new();
+    private DateTimeOffset _lastAdapterRefreshAt = DateTimeOffset.MinValue;
+    private int _adapterRefreshInFlight;
 
     private AppSettings _settings = new();
     private CancellationTokenSource? _monitoringCts;
@@ -86,6 +90,10 @@ public partial class MainWindow : Window
         UpdateDashboard(_lastSnapshot, null);
         _uiReady = true;
 
+        // Адаптеры появляются и исчезают уже после старта: VPN-служба поднимается позже логона, Wi-Fi
+        // моргает, TUN пересоздаётся на реконнекте. Снимок, снятый один раз в Loaded, этого не видит.
+        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+
         if (_settings.StartMonitoringOnLaunch)
         {
             // Тихий старт заводится ТОЛЬКО здесь: ручной «Старт мониторинга» его не включает,
@@ -111,6 +119,7 @@ public partial class MainWindow : Window
         }
 
         _monitoringCts?.Cancel();
+        NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
 
         if (_lastSnapshot is not null)
         {
@@ -322,11 +331,11 @@ public partial class MainWindow : Window
 
         if (selectedMode == VpnRouteMode.SeparateAdapter)
         {
-            _settings.ExpectedInterfaceName = suggestedAdapter!;
+            SetExpectedInterface(suggestedAdapter!);
         }
         else
         {
-            _settings.ExpectedInterfaceName = string.Empty;
+            SetExpectedInterface(string.Empty);
 
             if (!string.IsNullOrWhiteSpace(_lastSnapshot.Country))
             {
@@ -594,7 +603,7 @@ public partial class MainWindow : Window
         _settings.TreatUnexpectedIPv4AsLeakRisk = IpRiskCheckBox.IsChecked == true;
         _settings.AllowIpChangesWithinExpectedCountry = AllowIpChangesCheckBox.IsChecked == true;
         _settings.RouteMode = GetSelectedRouteMode();
-        _settings.ExpectedInterfaceName = (ExpectedInterfaceBox.Text ?? string.Empty).Trim();
+        SetExpectedInterface((ExpectedInterfaceBox.Text ?? string.Empty).Trim());
         _settings.TreatDefaultRouteChangeAsLeakRisk = RouteRiskCheckBox.IsChecked == true;
         _settings.EnableIPv6LeakCheck = Ipv6CheckBox.IsChecked == true;
         _settings.AllowExternalIPv6 = AllowExternalIpv6CheckBox.IsChecked == true;
@@ -797,6 +806,8 @@ public partial class MainWindow : Window
             var snapshot = await _networkCheckService.RunAsync(_settings, cancellationToken);
             _lastSnapshot = snapshot;
             _rollingWindow.Add(snapshot);
+
+            await MaybeRefreshAdapterInventoryAsync();
 
             var result = HealthEvaluator.Evaluate(snapshot, _rollingWindow, _settings, _routeCheckContext);
             await HandleResultAsync(trigger, snapshot, result, cancellationToken);
@@ -1511,6 +1522,21 @@ public partial class MainWindow : Window
         return string.Join(" / ", parts);
     }
 
+    /// <summary>
+    /// Writes the expected adapter as three values: the display string the user sees, plus the alias and
+    /// description matching runs on. The GUID is filled from the live inventory when the adapter is there —
+    /// as a hint, never as the sole key, because some tunnel drivers regenerate it.
+    /// </summary>
+    private void SetExpectedInterface(string display)
+    {
+        var (alias, description) = ExpectedInterface.SplitDisplay(display);
+        _settings.ExpectedInterfaceName = display;
+        _settings.ExpectedInterfaceAlias = alias;
+        _settings.ExpectedInterfaceDescription = description;
+        _settings.ExpectedInterfaceId = string.Empty;
+        _adapterPresence.Reset();
+    }
+
     private static string GetExpectedInterfaceName(AppSettings settings)
     {
         if (settings.RouteMode == VpnRouteMode.NoSeparateAdapter)
@@ -1598,20 +1624,50 @@ public partial class MainWindow : Window
                 : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0x22, 0x26, 0x2C));
     }
 
+    /// <summary>
+    /// Re-reads the adapter list on a timer and on every network-address change, so the route check follows
+    /// the machine instead of the snapshot taken at startup. Cheap guard: one PowerShell child at a time,
+    /// and not more often than <see cref="AdapterRefreshInterval"/>.
+    /// </summary>
+    private static readonly TimeSpan AdapterRefreshInterval = TimeSpan.FromSeconds(30);
+
+    private async Task MaybeRefreshAdapterInventoryAsync(bool force = false)
+    {
+        if (!force && DateTimeOffset.Now - _lastAdapterRefreshAt < AdapterRefreshInterval)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _adapterRefreshInFlight, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            await RefreshAdapterChoicesAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _adapterRefreshInFlight, 0);
+        }
+    }
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        // Событие приходит не в UI-потоке, а обновление трогает ComboBox.
+        Dispatcher.InvokeAsync(async () => await MaybeRefreshAdapterInventoryAsync(force: true));
+    }
+
     /// <summary>Fills the expected-interface dropdown with the machine's real adapters, keeping any manual text.</summary>
     private async Task RefreshAdapterChoicesAsync()
     {
         try
         {
             var inventory = await _adapterInventory.ReadAsync(CancellationToken.None);
+            _lastAdapterRefreshAt = DateTimeOffset.Now;
             _adapterInventoryResult = inventory;
-            _routeCheckContext = new RouteCheckContext(
-                true,
-                inventory.Adapters
-                    .SelectMany(adapter => new[] { adapter.Name, adapter.DisplayName })
-                    .Where(name => !string.IsNullOrWhiteSpace(name))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList());
+            UpdateRouteCheckContext(inventory);
             var current = ExpectedInterfaceBox.Text;
             ExpectedInterfaceBox.ItemsSource = inventory.Adapters
                 .Select(adapter => adapter.DisplayName)
@@ -1627,6 +1683,33 @@ public partial class MainWindow : Window
         }
 
         UpdateBlockedAdaptersText();
+    }
+
+    /// <summary>
+    /// Turns one adapter snapshot into the route-check context. A snapshot that is missing the expected
+    /// adapter is NOT published until it has been missing several times in a row: at logon the monitor
+    /// routinely wins the race against the VPN service, and one such reading used to freeze the app in
+    /// "НУЖНА НАСТРОЙКА" until it was restarted. Until absence is confirmed the context stays Unknown,
+    /// which by contract never declares a working route stale.
+    /// </summary>
+    private void UpdateRouteCheckContext(AdapterInventoryResult inventory)
+    {
+        var expected = ExpectedInterface.FromSettings(_settings);
+        var live = RouteCheckContext.FromAdapters(inventory.Adapters);
+
+        if (expected.IsEmpty)
+        {
+            _adapterPresence.Reset();
+            _routeCheckContext = live;
+            return;
+        }
+
+        var present = live.Contains(expected);
+        _adapterPresence.Observe(present);
+
+        _routeCheckContext = present || _adapterPresence.ConfirmedAbsent
+            ? live
+            : RouteCheckContext.Unknown;
     }
 
     private string? FindSuggestedVpnAdapter()
@@ -1712,16 +1795,36 @@ public partial class MainWindow : Window
         }
 
         var path = dialog.FileName;
-        if (_settings.ProtectedApps.Any(a => PathEquals(a.Path, path)))
+        var identityKey = ProtectedAppIdentity.ComputeKey(path);
+
+        // Сверяем по устойчивому ключу, а не по пути: после обновления VS Code-расширения (или Store-пакета,
+        // или CLI) путь другой, и проверка по пути заводила вторую строку на ту же самую программу.
+        var duplicate = _settings.ProtectedApps.FirstOrDefault(a =>
+            PathEquals(a.Path, path)
+            || string.Equals(ProtectedAppIdentity.KeyOf(a), identityKey, StringComparison.OrdinalIgnoreCase));
+        if (duplicate is not null)
         {
-            System.Windows.MessageBox.Show(this, "Эта программа уже в списке защищённых.",
-                "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (!PathEquals(duplicate.Path, path))
+            {
+                System.Windows.MessageBox.Show(this,
+                    $"Эта программа уже в списке как «{duplicate.Name}», но по старому пути.\n\n"
+                    + "Нажми «Обновить путь» в её строке — это перепривяжет существующее правило, "
+                    + "а не создаст второе.",
+                    "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                System.Windows.MessageBox.Show(this, "Эта программа уже в списке защищённых.",
+                    "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+
             return;
         }
 
         var app = new ProtectedApp
         {
             Path = path,
+            IdentityKey = identityKey,
             Name = ResolveAppName(path),
             RuleName = FirewallService.BuildRuleName(path),
             AddedAt = DateTimeOffset.Now
@@ -1824,12 +1927,17 @@ public partial class MainWindow : Window
 
         var newRuleName = FirewallService.BuildRuleName(newPath);
 
+        // Имя берётся из нового файла: у самообновляющихся программ версия зашита в FileDescription,
+        // и строка, оставленная как есть, годами показывает версию, которой на диске давно нет.
+        var newName = ResolveAppName(newPath);
+
         // Carry the new path/rule into the elevated call, but only commit to settings on success —
         // if the user cancels UAC the firewall is untouched, so the stored path must stay as-is.
         var pending = new ProtectedApp
         {
-            Name = app.Name,
+            Name = newName,
             Path = newPath,
+            IdentityKey = ProtectedAppIdentity.ComputeKey(newPath),
             RuleName = newRuleName,
             AddedAt = app.AddedAt,
             RulesAppliedAt = app.RulesAppliedAt
@@ -1868,6 +1976,8 @@ public partial class MainWindow : Window
             // Rule is in place — commit the new path/rule to the persisted app.
             app.Path = newPath;
             app.RuleName = newRuleName;
+            app.Name = newName;
+            app.IdentityKey = pending.IdentityKey;
             if (result.Items.Any(i => i.State == "applied"))
             {
                 app.RulesAppliedAt = DateTimeOffset.Now;
@@ -2184,27 +2294,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Stable identity across version updates: MSIX family name, CLI folder, VS Code extension id, else path.</summary>
-    private static string AppIdentityKey(ProtectedApp app)
-    {
-        if (AppxPathResolver.IsPackagedPath(app.Path)
-            && AppxPathResolver.TryParse(app.Path, out var folder, out _)
-            && AppxPathResolver.GetFamilyName(folder) is { } family)
-        {
-            return "appx:" + family;
-        }
-
-        if (CliPathResolver.GetStableKey(app.Path) is { } cliKey)
-        {
-            return "cli:" + cliKey;
-        }
-
-        if (VsCodeExtensionPathResolver.GetStableKey(app.Path) is { } vscodeExtensionKey)
-        {
-            return "vscode-ext:" + vscodeExtensionKey;
-        }
-
-        return "path:" + (app.Path ?? string.Empty).ToLowerInvariant();
-    }
+    private static string AppIdentityKey(ProtectedApp app) => ProtectedAppIdentity.KeyOf(app);
 
     private static bool SafeExists(string path)
     {

@@ -1,3 +1,5 @@
+using VpnHealthMonitor.Services;
+
 namespace VpnHealthMonitor.Models;
 
 public sealed class HealthResult
@@ -56,6 +58,39 @@ public enum VpnExitCheckState
 public sealed record RouteCheckContext(bool InventoryAvailable, IReadOnlyCollection<string> AvailableInterfaces)
 {
     public static RouteCheckContext Unknown { get; } = new(false, Array.Empty<string>());
+
+    /// <summary>
+    /// Adapters as read from Windows, with alias and description apart. When present, matching runs on
+    /// these; the flat name list stays for callers that only ever had strings.
+    /// </summary>
+    public IReadOnlyCollection<NetworkAdapterInfo> Adapters { get; init; } = Array.Empty<NetworkAdapterInfo>();
+
+    public static RouteCheckContext FromAdapters(IReadOnlyCollection<NetworkAdapterInfo> adapters)
+        => new(
+            true,
+            adapters
+                .SelectMany(adapter => new[] { adapter.Name, adapter.DisplayName })
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList())
+        {
+            Adapters = adapters
+        };
+
+    public bool Contains(ExpectedInterfaceIdentity expected)
+    {
+        if (!InventoryAvailable || expected.IsEmpty)
+        {
+            return false;
+        }
+
+        if (Adapters.Count > 0)
+        {
+            return Adapters.Any(expected.Matches);
+        }
+
+        return Contains(expected.Display);
+    }
 
     public bool Contains(string expectedInterfaceName)
     {

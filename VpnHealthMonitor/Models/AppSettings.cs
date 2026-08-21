@@ -17,7 +17,23 @@ public sealed class AppSettings
 
     public bool AllowIpChangesWithinExpectedCountry { get; set; } = true;
 
+    /// <summary>
+    /// Legacy display form "Alias (Description)". Kept as the human-readable value shown in the UI and
+    /// as the fallback an older build can still read; matching goes through the split fields below.
+    /// </summary>
     public string ExpectedInterfaceName { get; set; } = string.Empty;
+
+    /// <summary>Windows connection name (InterfaceAlias / Get-NetAdapter Name) of the expected VPN adapter.</summary>
+    public string ExpectedInterfaceAlias { get; set; } = string.Empty;
+
+    /// <summary>Driver-level description (InterfaceDescription) of the expected VPN adapter.</summary>
+    public string ExpectedInterfaceDescription { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Adapter GUID, a hint only. Some tunnel drivers regenerate it, so it can confirm a match but must
+    /// never be able to veto one made on the name.
+    /// </summary>
+    public string ExpectedInterfaceId { get; set; } = string.Empty;
 
     /// <summary>
     /// How this VPN integrates with Windows routing. Null means a legacy settings file written before

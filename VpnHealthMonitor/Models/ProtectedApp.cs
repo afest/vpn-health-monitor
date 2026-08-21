@@ -13,6 +13,13 @@ public sealed class ProtectedApp
     /// <summary>Full path to the .exe the rule targets (matched by program path).</summary>
     public string Path { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Identity that survives the app's own updates (MSIX family, CLI folder, VS Code extension id, else
+    /// the path). This — not <see cref="Path"/> — is what makes two entries the same protected app.
+    /// Empty in files written by older builds; filled in on load.
+    /// </summary>
+    public string IdentityKey { get; set; } = string.Empty;
+
     /// <summary>Predictable Windows Firewall rule name, e.g. "VPN Health Monitor - Block Direct - app [hash]".</summary>
     public string RuleName { get; set; } = string.Empty;
 

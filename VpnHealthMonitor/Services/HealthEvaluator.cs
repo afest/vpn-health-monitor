@@ -21,15 +21,15 @@ public static class HealthEvaluator
             return RouteCheckState.Disabled;
         }
 
-        var expected = GetExpectedInterfaceName(settings);
-        if (string.IsNullOrWhiteSpace(expected))
+        var expected = ExpectedInterface.FromSettings(settings);
+        if (expected.IsEmpty)
         {
             return RouteCheckState.NeedsConfiguration;
         }
 
         // A legacy settings file has no explicit mode. Preserve a real VPN-looking adapter, but never
         // reinterpret a physical Wi-Fi/Ethernet baseline as a useful tunnel check.
-        if (settings.RouteMode is null && !VpnInterfaceHeuristics.LooksLikeVpn(expected))
+        if (settings.RouteMode is null && !VpnInterfaceHeuristics.LooksLikeVpn(expected.Display))
         {
             return RouteCheckState.NeedsConfiguration;
         }
@@ -93,10 +93,11 @@ public static class HealthEvaluator
         var unexpectedExternalIPv6 = settings.EnableIPv6LeakCheck
             && !settings.AllowExternalIPv6
             && !string.IsNullOrWhiteSpace(snapshot.ExternalIPv6);
+        var expectedInterface = ExpectedInterface.FromSettings(settings);
         var expectedInterfaceName = GetExpectedInterfaceName(settings);
         var defaultRouteMismatch = routeCheck == RouteCheckState.Active
-            && !string.IsNullOrWhiteSpace(expectedInterfaceName)
-            && !InterfaceMatches(expectedInterfaceName, snapshot.InterfaceName);
+            && !expectedInterface.IsEmpty
+            && !ExpectedInterface.MatchesDisplay(expectedInterface, snapshot.InterfaceName);
 
         if (!snapshot.IpLookupSucceeded && !internetAvailable)
         {
@@ -292,8 +293,17 @@ public static class HealthEvaluator
             return string.Empty;
         }
 
-        return !string.IsNullOrWhiteSpace(settings.ExpectedInterfaceName)
-            ? settings.ExpectedInterfaceName
+        if (!string.IsNullOrWhiteSpace(settings.ExpectedInterfaceName))
+        {
+            return settings.ExpectedInterfaceName;
+        }
+
+        var display = ExpectedInterface.BuildDisplay(
+            settings.ExpectedInterfaceAlias,
+            settings.ExpectedInterfaceDescription);
+
+        return !string.IsNullOrWhiteSpace(display)
+            ? display
             : settings.Baseline?.InterfaceName ?? string.Empty;
     }
 
@@ -305,23 +315,6 @@ public static class HealthEvaluator
             || !string.IsNullOrWhiteSpace(settings.ExpectedCountry)
             || !string.IsNullOrWhiteSpace(expectedInterfaceName)
             || settings.ExpectedPublicIPv4.Count > 0;
-    }
-
-    private static bool InterfaceMatches(string expectedInterfaceName, string? actualInterfaceName)
-    {
-        if (string.IsNullOrWhiteSpace(expectedInterfaceName))
-        {
-            return true;
-        }
-
-        if (string.IsNullOrWhiteSpace(actualInterfaceName)
-            || string.Equals(actualInterfaceName, "Unknown", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return actualInterfaceName.Contains(expectedInterfaceName, StringComparison.OrdinalIgnoreCase)
-            || expectedInterfaceName.Contains(actualInterfaceName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildRouteMismatchDescription(
