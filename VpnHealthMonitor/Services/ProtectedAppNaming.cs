@@ -12,7 +12,24 @@ namespace VpnHealthMonitor.Services;
 /// </summary>
 public static class ProtectedAppNaming
 {
+    /// <summary>
+    /// Suffix for executables that ship inside a VS Code extension. Without it the sidecar and the
+    /// standalone CLI of the same product are both just "Claude Code" — two indistinguishable rows
+    /// guarding different binaries, which is precisely when a person needs to tell them apart.
+    /// </summary>
+    public const string VsCodeExtensionSuffix = " (расширение VS Code)";
+
     public static string Resolve(string path)
+    {
+        var name = ResolveBaseName(path);
+
+        return VsCodeExtensionPathResolver.IsVersionedExtensionPath(path)
+            && !name.Contains(VsCodeExtensionSuffix, StringComparison.OrdinalIgnoreCase)
+                ? name + VsCodeExtensionSuffix
+                : name;
+    }
+
+    private static string ResolveBaseName(string path)
     {
         try
         {

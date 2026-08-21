@@ -95,8 +95,9 @@ public class ProtectedAppIdentityTests
             var app = Assert.Single(settings.ProtectedApps);
             Assert.Equal(path, app.Path);
             Assert.StartsWith("vscode-ext:", app.IdentityKey);
-            // Имя пересобрано по файлу — версия 2.1.235 больше не показывается.
-            Assert.Equal("claude.exe", app.Name);
+            // Имя пересобрано по файлу — версия 2.1.235 больше не показывается,
+            // и строка помечена как sidecar расширения.
+            Assert.Equal("claude.exe" + ProtectedAppNaming.VsCodeExtensionSuffix, app.Name);
             // Самая ранняя установка защиты и самое свежее применение правил переживают склейку.
             Assert.Equal(new DateTimeOffset(2026, 7, 4, 10, 28, 0, TimeSpan.FromHours(5)), app.AddedAt);
             Assert.Equal(new DateTimeOffset(2026, 8, 21, 11, 3, 47, TimeSpan.FromHours(5)), app.RulesAppliedAt);

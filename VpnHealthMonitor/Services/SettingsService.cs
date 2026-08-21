@@ -161,6 +161,11 @@ public sealed class SettingsService
             app.Path = app.Path?.Trim() ?? string.Empty;
             app.IdentityKey = ProtectedAppIdentity.ComputeKey(app.Path);
 
+            // Имя — производная от файла, руками его в приложении не задать. Значит пересобирать его на
+            // каждой загрузке безопасно и это единственный способ, которым «Claude Code» из расширения
+            // отличается от одноимённого standalone CLI без ручных пометок.
+            app.Name = ProtectedAppNaming.RefreshIfPossible(app.Path, app.Name);
+
             if (!byKey.TryGetValue(app.IdentityKey, out var existing))
             {
                 byKey[app.IdentityKey] = app;
