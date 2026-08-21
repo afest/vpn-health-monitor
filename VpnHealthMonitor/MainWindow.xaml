@@ -707,6 +707,9 @@
                                             <DataTrigger Binding="{Binding Status}" Value="Error">
                                                 <Setter Property="Background" Value="#FBE4E0" />
                                             </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="Untracked">
+                                                <Setter Property="Background" Value="#FFF4DC" />
+                                            </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </ListView.ItemContainerStyle>
@@ -734,6 +737,9 @@
                                                                     <DataTrigger Binding="{Binding Status}" Value="FileNotFound">
                                                                         <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
                                                                     </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="Untracked">
+                                                                        <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
+                                                                    </DataTrigger>
                                                                 </Style.Triggers>
                                                             </Style>
                                                         </StackPanel.Resources>
@@ -759,7 +765,12 @@
                                                                 Visibility="{Binding CanUpdatePath, Converter={StaticResource BoolToVis}}"
                                                                 ToolTip="{Binding ResolvedNewPath}"
                                                                 Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
+                                                        <Button Content="Взять под наблюдение" Click="AdoptRule_Click"
+                                                                Visibility="{Binding CanAdopt, Converter={StaticResource BoolToVis}}"
+                                                                ToolTip="Правило уже действует. Кнопка только добавляет программу в список, UAC не нужен."
+                                                                Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
                                                         <Button Content="Переустановить" Click="ReinstallApp_Click"
+                                                                Visibility="{Binding CanReinstall, Converter={StaticResource BoolToVis}}"
                                                                 Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
                                                         <Button Content="Удалить" Click="RemoveApp_Click"
                                                                 Margin="0" Padding="10,3" MinHeight="26" />

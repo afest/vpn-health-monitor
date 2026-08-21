@@ -147,6 +147,27 @@ public sealed class FirewallService
     }
 
     /// <summary>
+    /// Rules that exist in Windows under our prefix but that no stored entry claims.
+    ///
+    /// They arise whenever a rule is created outside the app — by an older build, by a hand-run of the
+    /// elevated helper, by a restore from another machine. The protection is real and working; only the
+    /// app is blind to it, which is the dangerous half: the list on screen and the actual firewall
+    /// drift apart in silence. Surfacing them is what keeps the two honest.
+    /// </summary>
+    public static IReadOnlyList<FirewallRuleInfo> FindUntrackedRules(
+        IReadOnlyList<FirewallRuleInfo> rules,
+        IReadOnlyList<ProtectedApp> apps)
+    {
+        var claimed = new HashSet<string>(
+            apps.Select(app => app.RuleName).Where(name => !string.IsNullOrWhiteSpace(name)),
+            StringComparer.OrdinalIgnoreCase);
+
+        return rules
+            .Where(rule => !string.IsNullOrWhiteSpace(rule.Rule) && !claimed.Contains(rule.Rule))
+            .ToList();
+    }
+
+    /// <summary>
     /// Fallback status when firewall rules cannot be read (access denied to non-elevated caller).
     /// Based on the locally recorded apply state, which is only set after a confirmed elevated apply.
     /// </summary>

@@ -27,4 +27,10 @@ public sealed class ProtectedAppRow
 
     /// <summary>Resolved current exe path for a moved Store/MSIX package (null when not applicable).</summary>
     public string? ResolvedNewPath { get; init; }
+
+    /// <summary>True for a rule found in Windows that no entry in the settings list claims.</summary>
+    public bool CanAdopt { get; init; }
+
+    /// <summary>False for untracked rows: there is no stored entry to re-apply rules for.</summary>
+    public bool CanReinstall { get; init; } = true;
 }

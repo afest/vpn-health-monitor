@@ -48,6 +48,13 @@ public enum ProtectionStatus
     /// </summary>
     PathChanged,
 
+    /// <summary>
+    /// Правило с нашим префиксом есть в Windows, но программы нет в списке защищённых.
+    /// Защита при этом действует — не видно её только приложению, и вот это как раз опасно:
+    /// список в интерфейсе и реальное состояние фаервола расходятся молча.
+    /// </summary>
+    Untracked,
+
     /// <summary>Could not determine status (query failed / inconsistent rule).</summary>
     Error
 }
@@ -60,6 +67,7 @@ public static class ProtectionStatusText
         ProtectionStatus.RulesNotApplied => "Правила не применены",
         ProtectionStatus.FileNotFound => "Файл не найден",
         ProtectionStatus.PathChanged => "Путь устарел",
+        ProtectionStatus.Untracked => "Правило вне списка",
         _ => "Ошибка"
     };
 
@@ -73,6 +81,7 @@ public static class ProtectionStatusText
         ProtectionStatus.RulesNotApplied => "○",  // пустой круг
         ProtectionStatus.FileNotFound => "?",
         ProtectionStatus.PathChanged => "▲",      // треугольник
+        ProtectionStatus.Untracked => "◆",        // ромб
         _ => "✕"                                  // крест
     };
 
@@ -82,6 +91,7 @@ public static class ProtectionStatusText
         ProtectionStatus.RulesNotApplied => "Правило ещё не создано. Нажми «Применить правила» (запросит UAC).",
         ProtectionStatus.FileNotFound => "Файла по сохранённому пути нет: программа удалена или переустановлена в другое место.",
         ProtectionStatus.PathChanged => "Правило указывает на мёртвый путь — защита НЕ действует. Нажми «Обновить путь».",
+        ProtectionStatus.Untracked => "Правило в Windows есть и работает, но программы нет в списке защищённых — приложение не следит за её состоянием. Нажми «Взять под наблюдение».",
         _ => "Статус не определён: правило не соответствует ожидаемому или запрос к firewall не прошёл."
     };
 }

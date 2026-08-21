@@ -2253,9 +2253,90 @@ public partial class MainWindow : Window
             _lastKnownExists[AppIdentityKey(app)] = SafeExists(app.Path);
         }
 
+        AddUntrackedRuleRows(rules);
+
         _notifiedPathChange = stale;
         UpdateAdminStatus(canVerifyLive);
         UpdateBlockedAdaptersText();
+    }
+
+    /// <summary>
+    /// Показывает правила, которые есть в Windows, но которых нет в списке защищённых программ.
+    ///
+    /// Без этого список на экране и настоящее состояние фаервола расходятся молча: правило работает,
+    /// а приложение о нём не знает и ничего про него не говорит. Именно так выглядела защита движа,
+    /// поставленная в обход приложения, — и точно так же выглядели бы правила, оставшиеся от прошлой
+    /// установки. Строку можно либо взять под наблюдение, либо снять.
+    /// </summary>
+    private void AddUntrackedRuleRows(IReadOnlyList<FirewallRuleInfo>? rules)
+    {
+        if (rules is null)
+        {
+            return;
+        }
+
+        foreach (var rule in FirewallService.FindUntrackedRules(rules, _settings.ProtectedApps))
+        {
+            var path = rule.Program ?? string.Empty;
+            var name = string.IsNullOrWhiteSpace(path)
+                ? rule.Rule
+                : ProtectedAppNaming.RefreshIfPossible(path, SafeFileName(path));
+
+            _protectedAppRows.Add(new ProtectedAppRow
+            {
+                // Не сохраняется в настройки: строка живёт до следующего обновления списка.
+                App = new ProtectedApp
+                {
+                    Name = name,
+                    Path = path,
+                    RuleName = rule.Rule,
+                    IdentityKey = ProtectedAppIdentity.ComputeKey(path)
+                },
+                Name = name,
+                Path = path,
+                Status = ProtectionStatus.Untracked,
+                StatusText = ProtectionStatus.Untracked.ToDisplayText(),
+                AppliedText = "—",
+                CanUpdatePath = false,
+                CanAdopt = true,
+                CanReinstall = false
+            });
+        }
+    }
+
+    private static string SafeFileName(string path)
+    {
+        try { return Path.GetFileName(path); } catch { return path; }
+    }
+
+    /// <summary>
+    /// Берёт найденное правило под наблюдение: заводит запись в списке защищённых программ.
+    /// UAC не нужен — правило в Windows уже есть, меняется только список приложения.
+    /// </summary>
+    private async void AdoptRule_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as System.Windows.Controls.Button)?.DataContext is not ProtectedAppRow row)
+        {
+            return;
+        }
+
+        var app = new ProtectedApp
+        {
+            Name = row.App.Name,
+            Path = row.App.Path,
+            RuleName = row.App.RuleName,
+            IdentityKey = row.App.IdentityKey,
+            AddedAt = DateTimeOffset.Now,
+            // Правило существует и проверено живым запросом — значит оно применено, дата известна лишь приблизительно.
+            RulesAppliedAt = DateTimeOffset.Now
+        };
+
+        _settings.ProtectedApps.Add(app);
+        await _settingsService.SaveAsync(_settings);
+        await LogKillSwitchEventAsync("rule_adopted",
+            $"правило взято под наблюдение: {app.Name} ({app.RuleName})", app);
+        FooterText.Text = $"«{app.Name}» добавлена в список — правило уже действовало, UAC не потребовался.";
+        await RefreshProtectedAppsAsync(logIssues: false);
     }
 
     /// <summary>
