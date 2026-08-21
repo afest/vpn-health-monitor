@@ -1,3 +1,4 @@
+using System.IO;
 using VpnHealthMonitor.Models;
 using VpnHealthMonitor.Services;
 using Xunit;
@@ -55,38 +56,122 @@ public class ProtectedAppIdentityTests
     [Fact]
     public void Migration_CollapsesDuplicateExtensionRows()
     {
-        // Exactly the shape found in the live settings file: two rows, same binary, stale names.
+        // Форма ровно как в живом settings.json: две строки, один и тот же бинарь, имена от старых версий.
+        // Путь берём временный — тест не должен зависеть от того, какая версия расширения стоит на машине.
+        var root = Path.Combine(Path.GetTempPath(), "vhm-tests-" + Guid.NewGuid().ToString("N"));
+        var folder = Path.Combine(root, ".vscode", "extensions", "anthropic.claude-code-2.1.238-win32-x64",
+            "resources", "native-binary");
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, "claude.exe");
+        File.WriteAllText(path, string.Empty);
+
+        try
+        {
+            var settings = new AppSettings
+            {
+                ProtectedApps =
+                {
+                    new ProtectedApp
+                    {
+                        Name = "Claude Code 2.1.235 (VS Code)",
+                        Path = path,
+                        RuleName = "VPN Health Monitor - Block Direct - claude.exe [479a1bb0]",
+                        AddedAt = new DateTimeOffset(2026, 7, 4, 10, 28, 0, TimeSpan.FromHours(5)),
+                        RulesAppliedAt = new DateTimeOffset(2026, 8, 21, 11, 3, 37, TimeSpan.FromHours(5))
+                    },
+                    new ProtectedApp
+                    {
+                        Name = "Claude Code 2.1.237 (VS Code)",
+                        Path = path,
+                        RuleName = "VPN Health Monitor - Block Direct - claude.exe [479a1bb0]",
+                        AddedAt = new DateTimeOffset(2026, 8, 20, 8, 35, 0, TimeSpan.FromHours(5)),
+                        RulesAppliedAt = new DateTimeOffset(2026, 8, 21, 11, 3, 47, TimeSpan.FromHours(5))
+                    }
+                }
+            };
+
+            SettingsService.MigrateProtectedAppIdentity(settings);
+
+            var app = Assert.Single(settings.ProtectedApps);
+            Assert.Equal(path, app.Path);
+            Assert.StartsWith("vscode-ext:", app.IdentityKey);
+            // Имя пересобрано по файлу — версия 2.1.235 больше не показывается.
+            Assert.Equal("claude.exe", app.Name);
+            // Самая ранняя установка защиты и самое свежее применение правил переживают склейку.
+            Assert.Equal(new DateTimeOffset(2026, 7, 4, 10, 28, 0, TimeSpan.FromHours(5)), app.AddedAt);
+            Assert.Equal(new DateTimeOffset(2026, 8, 21, 11, 3, 47, TimeSpan.FromHours(5)), app.RulesAppliedAt);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Merge_KeepsLastKnownName_WhenNoFileIsOnDisk()
+    {
+        // Оба пути мёртвые: выдумывать имя не из чего, сохраняем последнее известное.
+        const string root = @"C:
+o-such-root\.vscode\extensions\";
         var settings = new AppSettings
         {
             ProtectedApps =
             {
                 new ProtectedApp
                 {
-                    Name = "Claude Code 2.1.235 (VS Code)",
-                    Path = Ext238,
-                    RuleName = "VPN Health Monitor - Block Direct - claude.exe [479a1bb0]",
-                    AddedAt = new DateTimeOffset(2026, 7, 4, 10, 28, 0, TimeSpan.FromHours(5)),
-                    RulesAppliedAt = new DateTimeOffset(2026, 8, 21, 11, 3, 37, TimeSpan.FromHours(5))
+                    Name = "Ghost 1.0.0",
+                    Path = root + @"vendor.ghost-1.0.0-win32-x64in\ghost.exe"
                 },
                 new ProtectedApp
                 {
-                    Name = "Claude Code 2.1.237 (VS Code)",
-                    Path = Ext238,
-                    RuleName = "VPN Health Monitor - Block Direct - claude.exe [479a1bb0]",
-                    AddedAt = new DateTimeOffset(2026, 8, 20, 8, 35, 0, TimeSpan.FromHours(5)),
-                    RulesAppliedAt = new DateTimeOffset(2026, 8, 21, 11, 3, 47, TimeSpan.FromHours(5))
+                    Name = "Ghost 2.0.0",
+                    Path = root + @"vendor.ghost-2.0.0-win32-x64in\ghost.exe"
                 }
             }
         };
 
         SettingsService.MigrateProtectedAppIdentity(settings);
 
-        var app = Assert.Single(settings.ProtectedApps);
-        Assert.Equal(Ext238, app.Path);
-        Assert.StartsWith("vscode-ext:", app.IdentityKey);
-        // Самая ранняя установка защиты и самое свежее применение правил переживают склейку.
-        Assert.Equal(new DateTimeOffset(2026, 7, 4, 10, 28, 0, TimeSpan.FromHours(5)), app.AddedAt);
-        Assert.Equal(new DateTimeOffset(2026, 8, 21, 11, 3, 47, TimeSpan.FromHours(5)), app.RulesAppliedAt);
+        Assert.Equal("Ghost 1.0.0", Assert.Single(settings.ProtectedApps).Name);
+    }
+
+    [Fact]
+    public void Merge_PrefersTheEntryWhoseFileStillExists()
+    {
+        // Мёртвая строка идёт первой; выиграть должен путь, по которому файл реально есть,
+        // иначе после склейки правило указывало бы в пустоту.
+        var root = Path.Combine(Path.GetTempPath(), "vhm-tests-" + Guid.NewGuid().ToString("N"), ".vscode", "extensions");
+        var liveFolder = Path.Combine(root, "vendor.tool-2.0.0-win32-x64", "bin");
+        Directory.CreateDirectory(liveFolder);
+        var livePath = Path.Combine(liveFolder, "tool.exe");
+        File.WriteAllText(livePath, string.Empty);
+
+        try
+        {
+            var settings = new AppSettings
+            {
+                ProtectedApps =
+                {
+                    new ProtectedApp
+                    {
+                        Name = "Tool 1.0.0",
+                        Path = Path.Combine(root, "vendor.tool-1.0.0-win32-x64", "bin", "tool.exe"),
+                        RuleName = "old-rule"
+                    },
+                    new ProtectedApp { Name = "Tool 2.0.0", Path = livePath, RuleName = "new-rule" }
+                }
+            };
+
+            SettingsService.MigrateProtectedAppIdentity(settings);
+
+            var app = Assert.Single(settings.ProtectedApps);
+            Assert.Equal(livePath, app.Path);
+            Assert.Equal("new-rule", app.RuleName);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(root)!)!, recursive: true);
+        }
     }
 
     [Fact]

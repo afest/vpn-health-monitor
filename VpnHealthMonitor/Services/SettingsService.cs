@@ -184,6 +184,10 @@ public sealed class SettingsService
             keep.Name = drop.Name;
         }
 
+        // Имя пересобирается по тому файлу, который остался: иначе склейка двух строк «Claude Code 2.1.235»
+        // и «2.1.237» оставляет ту версию, которой на диске уже нет.
+        keep.Name = ProtectedAppNaming.RefreshIfPossible(keep.Path, keep.Name);
+
         if (drop.AddedAt < keep.AddedAt)
         {
             keep.AddedAt = drop.AddedAt;

@@ -2331,23 +2331,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string ResolveAppName(string path)
-    {
-        try
-        {
-            var info = FileVersionInfo.GetVersionInfo(path);
-            if (!string.IsNullOrWhiteSpace(info.FileDescription))
-            {
-                return info.FileDescription.Trim();
-            }
-        }
-        catch
-        {
-            // fall through to file name
-        }
-
-        return Path.GetFileName(path);
-    }
+    private static string ResolveAppName(string path) => ProtectedAppNaming.Resolve(path);
 
     private static bool PathEquals(string a, string b)
     {
