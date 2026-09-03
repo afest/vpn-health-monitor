@@ -290,7 +290,8 @@ public static class HealthEvaluator
         };
     }
 
-    private static bool CountryMatches(string expectedCountry, string? actualCountry)
+    /// <summary>Публичный: тем же сравнением пользуется диалог «страна изменилась» в UI.</summary>
+    public static bool CountryMatches(string expectedCountry, string? actualCountry)
     {
         if (string.IsNullOrWhiteSpace(expectedCountry))
         {

@@ -59,7 +59,9 @@ public partial class MainWindow : Window
     // Провайдеры, по которым в этой сессии уже спросили и получили отказ: цикл идёт каждые несколько
     // секунд, и повторять вопрос по тому же выходу нельзя. Сбрасывается вместе с перезапуском.
     private readonly HashSet<string> _declinedProviders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _declinedCountries = new(StringComparer.OrdinalIgnoreCase);
     private bool _providerPromptOpen;
+    private bool _countryPromptOpen;
     private NetworkSnapshot? _pendingProviderPrompt;
 
     private AppSettings _settings = new();
@@ -929,6 +931,9 @@ public partial class MainWindow : Window
         _pendingProviderPrompt = null;
         if (pending is not null)
         {
+            // Страна первой: она объясняет ситуацию крупнее. Согласие на смену страны часто снимает
+            // и вопрос про провайдера — после пересчёта тот уже может оказаться разрешённым.
+            await MaybeOfferCountryAsync(pending, cancellationToken);
             await MaybeOfferProviderAsync(pending, cancellationToken);
         }
     }
@@ -1015,6 +1020,70 @@ public partial class MainWindow : Window
         // Сам вопрос показывается ПОСЛЕ выхода из-под _checkLock (см. RunSingleCheckAsync): модальное
         // окно ждёт человека сколько угодно, а держать на это время замок проверки нельзя.
         _pendingProviderPrompt = quietStartOutcome != QuietStartOutcome.Quiet ? snapshot : null;
+    }
+
+    /// <summary>
+    /// Предлагает обновить ожидаемую страну, когда выход уехал в другую.
+    ///
+    /// В отличие от провайдеров, страна НЕ копится списком: ожидание всегда одна конкретная страна,
+    /// диалог её заменяет. Список стран означал бы «мне всё равно, где я выхожу», а проверка по стране —
+    /// главный сигнал обрыва туннеля у тех, чей VPN выходит не в родной стране.
+    /// </summary>
+    private async Task MaybeOfferCountryAsync(NetworkSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        if (_countryPromptOpen
+            || !_settings.TreatCountryMismatchAsLeakRisk
+            || string.IsNullOrWhiteSpace(_settings.ExpectedCountry)
+            || string.IsNullOrWhiteSpace(snapshot.Country)
+            || HealthEvaluator.CountryMatches(_settings.ExpectedCountry, snapshot.Country))
+        {
+            return;
+        }
+
+        var actual = CountryNames.ToDisplayName(snapshot.Country);
+        var expected = CountryNames.ToDisplayName(_settings.ExpectedCountry);
+        if (string.IsNullOrWhiteSpace(actual) || !_declinedCountries.Add(actual))
+        {
+            return;
+        }
+
+        _countryPromptOpen = true;
+        try
+        {
+            var vpnName = VpnClientNaming.FromAdapterName(snapshot.InterfaceName)
+                ?? VpnClientNaming.FromAdapterName(ExpectedInterface.FromSettings(_settings).Alias);
+            var yesLine = vpnName is null
+                ? "ДА — если ты только что сам выбрал другую страну в своём VPN."
+                : $"ДА — если ты только что сам выбрал другую страну в «{vpnName}».";
+
+            var answer = System.Windows.MessageBox.Show(
+                this,
+                $"Раньше интернет выходил в стране {expected}, а сейчас выходит в стране {actual}.\n\n"
+                + yesLine + $" Тогда программа будет ждать {actual} и перестанет ругаться.\n\n"
+                + "НЕТ — если ты страну не менял. Тогда это тревожный признак: возможно, VPN отключился "
+                + "и интернет пошёл напрямую. Проверь, включён ли VPN.\n\n"
+                + $"Считать {actual} правильной страной?",
+                "Интернет выходит в другой стране",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            _declinedCountries.Remove(actual);
+            _settings.ExpectedCountry = actual;
+            await _settingsService.SaveAsync(_settings);
+            UpdateSettingsControls();
+            await AddEventAsync($"ожидаемая страна изменена: {expected} -> {actual}", _currentStatus, snapshot, cancellationToken);
+            await ReevaluateDashboardAsync("country-settings-change");
+        }
+        finally
+        {
+            _countryPromptOpen = false;
+        }
     }
 
     /// <summary>
