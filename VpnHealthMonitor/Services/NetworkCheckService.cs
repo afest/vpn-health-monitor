@@ -57,7 +57,13 @@ public sealed class NetworkCheckService
 
     // SocketsHttpHandler с ограниченным временем жизни соединений: пул не залипает за старый
     // маршрут после переключения VPN — ровно тот момент, который монитор обязан ловить точно.
-    private readonly HttpClient _httpClient = new(new SocketsHttpHandler
+    // Но PooledConnectionLifetime закрывает соединение только по таймеру, поэтому до полутора минут
+    // после смены туннеля ответы приходили по старому маршруту: монитор показывал прежний IP и страну
+    // на новом сервере, и «Проверить сейчас» этого не лечила. Клиент пересоздаётся по факту смены
+    // маршрута — см. ResetNetworkState.
+    private HttpClient _httpClient = CreateHttpClient();
+
+    private static HttpClient CreateHttpClient() => new(new SocketsHttpHandler
     {
         PooledConnectionLifetime = TimeSpan.FromSeconds(90),
         ConnectTimeout = TimeSpan.FromSeconds(5),
@@ -70,13 +76,80 @@ public sealed class NetworkCheckService
     private DateTimeOffset _lastCrossCheckAt;
     private int _ipRotationCursor;
 
+    // Отпечаток маршрута по умолчанию: индекс интерфейса и его IPv4. Меняется и при переключении
+    // сервера VPN (тот же TAP, новый адрес), и при обрыве туннеля (маршрут уходит на физический).
+    private string? _routeFingerprint;
+
     [DllImport("iphlpapi.dll", SetLastError = true)]
     private static extern int GetBestInterface(uint destAddr, out uint bestIfIndex);
+
+    /// <summary>
+    /// Сбрасывает всё сетевое состояние проверки: пул соединений, кэш geo, окно кросс-сверки и
+    /// cooldown'ы endpoint'ов. Вызывается при смене маршрута по умолчанию и перед ручной проверкой —
+    /// «Проверить сейчас» обязана сходить в сеть заново, иначе она подтверждает устаревшую картину
+    /// ровно в тот момент, когда пользователь что-то заподозрил.
+    /// </summary>
+    public void ResetNetworkState()
+    {
+        var old = _httpClient;
+        _httpClient = CreateHttpClient();
+        try
+        {
+            old.Dispose();
+        }
+        catch
+        {
+            // Dispose не должен ронять проверку: висящие запросы отменятся сами.
+        }
+
+        _cachedIpResult = null;
+        _lastCrossCheckAt = default;
+        _hostCooldownUntil.Clear();
+    }
+
+    // Отпечаток текущего маршрута наружу. null означает «определить не удалось» — в этом случае
+    // отпечаток не обновляем, чтобы разовый сбой не выглядел как смена сети.
+    private static string? GetRouteFingerprint()
+    {
+        try
+        {
+            var networkInterface = FindInterfaceByBestRoute();
+            if (networkInterface is null)
+            {
+                return null;
+            }
+
+            var properties = networkInterface.GetIPProperties();
+            var ipv4 = properties.UnicastAddresses
+                .FirstOrDefault(item => item.Address.AddressFamily == AddressFamily.InterNetwork)
+                ?.Address.ToString();
+
+            return $"{networkInterface.Id}|{ipv4}";
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     public async Task<NetworkSnapshot> RunAsync(AppSettings settings, CancellationToken cancellationToken)
     {
         var checkedAt = DateTimeOffset.Now;
         var errors = new List<string>();
+
+        // Маршрут наружу сменился — старый пул соединений и кэш geo описывают уже несуществующую
+        // сеть. Сбрасываем до проверок, иначе первый цикл после переключения VPN отвечает по прошлому
+        // туннелю (T-403).
+        var fingerprint = GetRouteFingerprint();
+        if (fingerprint is not null)
+        {
+            if (_routeFingerprint is not null && !string.Equals(_routeFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                ResetNetworkState();
+            }
+
+            _routeFingerprint = fingerprint;
+        }
 
         // Внешний IP-адрес опрашивается КАЖДЫЙ цикл (1 запрос ротацией, не веером) — это основной
         // и для proxy-VPN единственный быстрый сигнал смены сети. Щадим не IP, а лимитированные

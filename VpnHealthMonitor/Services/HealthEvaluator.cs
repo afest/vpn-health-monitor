@@ -99,6 +99,11 @@ public static class HealthEvaluator
             && !expectedInterface.IsEmpty
             && !ExpectedInterface.MatchesDisplay(expectedInterface, snapshot.InterfaceName);
 
+        // Наблюдаемый факт: трафик наружу идёт через тот самый VPN-адаптер, который ждали. Считается
+        // независимо от RouteMode — настройка описывает намерение, а этот флаг описывает состояние.
+        var expectedInterfaceMatches = !expectedInterface.IsEmpty
+            && ExpectedInterface.MatchesDisplay(expectedInterface, snapshot.InterfaceName);
+
         if (!snapshot.IpLookupSucceeded && !internetAvailable)
         {
             return Result(MonitorStatus.NoInternet, "Внешний IP, HTTP-проверки и ping недоступны.");
@@ -122,9 +127,16 @@ public static class HealthEvaluator
         // и все API внешнего IPv4 разом недоступны — для proxy-режима это типичный признак обрыва
         // туннеля (трафик через мёртвый прокси отрезан, реальный IP наружу не определить).
         // Отличаем от обычного сбоя только IP API: там HttpAvailable остаётся true.
+        //
+        // Эвристика верна только там, где у VPN нет своего адаптера. При живом ожидаемом TAP тот же
+        // набор признаков означает провалившуюся проверку, а не доказанный обрыв: адаптер на месте,
+        // маршрут совпал, наружу мы просто не достучались (T-403 — «VPN ОТКЛЮЧЁН» на рабочем HideMy).
+        // Смотрим на наблюдаемый факт совпадения интерфейса, а не на RouteMode из настроек: режим
+        // выставляет человек, и ошибка в нём не должна отключать детектор обрыва.
         if (!snapshot.IpLookupSucceeded
             && !snapshot.HttpAvailable
             && snapshot.PingSuccesses > 0
+            && !expectedInterfaceMatches
             && VpnConfigured(settings, expectedInterfaceName))
         {
             return Result(
@@ -134,6 +146,16 @@ public static class HealthEvaluator
 
         if (!snapshot.IpLookupSucceeded)
         {
+            // Ожидаемый VPN-адаптер держит маршрут, но наружу не ответил никто: ни IP API, ни HTTP-пробы.
+            // Утверждать «VPN выключен» нельзя — адаптер на месте; утверждать, что всё хорошо, тоже нельзя —
+            // выход не подтверждён. Честный ответ: проверка не удалась, состояние выхода неизвестно.
+            if (!snapshot.HttpAvailable && expectedInterfaceMatches)
+            {
+                return Result(
+                    MonitorStatus.CheckFailed,
+                    $"VPN-адаптер «{expectedInterfaceName}» держит маршрут, но ни одна внешняя проверка не ответила — выход не подтверждён. Туннель мог остаться поднятым при мёртвом канале.");
+            }
+
             return Result(MonitorStatus.CheckFailed, "Интернет выглядит доступным, но API внешнего IPv4 не ответили корректно.");
         }
 

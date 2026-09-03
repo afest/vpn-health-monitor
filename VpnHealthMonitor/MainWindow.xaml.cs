@@ -49,6 +49,13 @@ public partial class MainWindow : Window
     private DateTimeOffset _lastAdapterRefreshAt = DateTimeOffset.MinValue;
     private int _adapterRefreshInFlight;
 
+    // Потолок на один цикл проверки. Внутри ~4 с на пробу с запасом на веер и geo-lookup; всё, что
+    // дольше, — это зависание, а не медленная сеть.
+    private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(30);
+    private DateTimeOffset? _lastCompletedCheckAt;
+    private DateTimeOffset? _monitoringStartedAt;
+    private bool _staleChecksReported;
+
     private AppSettings _settings = new();
     private CancellationTokenSource? _monitoringCts;
     private Task? _monitoringTask;
@@ -239,6 +246,10 @@ public partial class MainWindow : Window
         _monitoringCts = new CancellationTokenSource();
         SetMonitoringState(true);
 
+        _monitoringStartedAt = DateTimeOffset.Now;
+        _lastCompletedCheckAt = null;
+        _staleChecksReported = false;
+
         await AddEventAsync(description, _currentStatus, _lastSnapshot, CancellationToken.None);
         _monitoringTask = MonitorLoopAsync(_monitoringCts.Token);
     }
@@ -251,6 +262,10 @@ public partial class MainWindow : Window
     private async void RunCheckButton_Click(object sender, RoutedEventArgs e)
     {
         await SaveSettingsFromUiAsync();
+
+        // Ручная проверка обязана сходить в сеть заново: её жмут, когда картинке уже не доверяют.
+        // Без сброса пул соединений и кэш geo подтверждают прежний вердикт по мёртвому маршруту.
+        _networkCheckService.ResetNetworkState();
         await RunSingleCheckAsync("manual-check", CancellationToken.None);
     }
 
@@ -754,12 +769,54 @@ public partial class MainWindow : Window
             while (!cancellationToken.IsCancellationRequested)
             {
                 await RunSingleCheckAsync("scheduled check", cancellationToken);
+                await WarnIfChecksStalledAsync(cancellationToken);
                 await Task.Delay(TimeSpan.FromSeconds(_settings.IntervalSeconds), cancellationToken);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    /// <summary>
+    /// Сторож живости: если ни одна проверка не завершилась дольше допустимого, экран показывает
+    /// прошлое, а не настоящее. Молча оставлять прежний вердикт нельзя — он читается как актуальный.
+    /// </summary>
+    private async Task WarnIfChecksStalledAsync(CancellationToken cancellationToken)
+    {
+        var limit = TimeSpan.FromSeconds(Math.Max(60, _settings.IntervalSeconds * 6));
+
+        // Отсчёт от старта мониторинга, а не только от последней удачи: если зависла первая же
+        // проверка, успешного замера не будет вообще, и от null сторож не должен молчать.
+        var since = _lastCompletedCheckAt ?? _monitoringStartedAt;
+        if (since is null || DateTimeOffset.Now - since.Value < limit)
+        {
+            _staleChecksReported = false;
+            return;
+        }
+
+        if (_staleChecksReported)
+        {
+            return;
+        }
+
+        _staleChecksReported = true;
+        var minutes = (DateTimeOffset.Now - since.Value).TotalMinutes;
+        var description = $"Проверки не проходят {minutes:0} мин — данные на экране устарели, состояние VPN неизвестно.";
+
+        var snapshot = new NetworkSnapshot
+        {
+            CheckedAt = DateTimeOffset.Now,
+            Errors = new List<string> { description }
+        };
+        var result = new HealthResult
+        {
+            Status = MonitorStatus.CheckFailed,
+            Description = description
+        };
+
+        await HandleResultAsync("watchdog", snapshot, result, cancellationToken);
+        UpdateDashboard(snapshot, result);
     }
 
     private async Task StopMonitoringAsync(string description)
@@ -803,8 +860,17 @@ public partial class MainWindow : Window
         try
         {
             SetBusyState(true);
-            var snapshot = await _networkCheckService.RunAsync(_settings, cancellationToken);
+
+            // Жёсткий потолок на цикл. Без него зависший сетевой вызов останавливает MonitorLoopAsync
+            // навсегда: проверок нет, в лог пишется только смена статуса, и мёртвый монитор выглядит
+            // ровно как монитор со стабильно плохим вердиктом (T-403: простой 4 часа на старой плашке).
+            using var checkCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            checkCts.CancelAfter(CheckTimeout);
+            var checkToken = checkCts.Token;
+
+            var snapshot = await _networkCheckService.RunAsync(_settings, checkToken);
             _lastSnapshot = snapshot;
+            _lastCompletedCheckAt = DateTimeOffset.Now;
             _rollingWindow.Add(snapshot);
 
             await MaybeRefreshAdapterInventoryAsync();
@@ -819,15 +885,28 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            // Отмена по таймауту цикла приходит сюда: внешний токен не отменён, значит проверка
+            // не уложилась в CheckTimeout. Говорим об этом прямо — «проверка зависла» и «сеть
+            // недоступна» требуют разных действий, и молчать про первое нельзя.
+            var timedOut = ex is OperationCanceledException && !cancellationToken.IsCancellationRequested;
+            var message = timedOut
+                ? $"Проверка не уложилась в {CheckTimeout.TotalSeconds:0} с и была прервана. Состояние сети неизвестно."
+                : ex.Message;
+
+            if (timedOut)
+            {
+                _networkCheckService.ResetNetworkState();
+            }
+
             var fallbackSnapshot = new NetworkSnapshot
             {
                 CheckedAt = DateTimeOffset.Now,
-                Errors = new List<string> { ex.Message }
+                Errors = new List<string> { message }
             };
             var fallbackResult = new HealthResult
             {
                 Status = MonitorStatus.CheckFailed,
-                Description = ex.Message
+                Description = message
             };
 
             await HandleResultAsync(trigger, fallbackSnapshot, fallbackResult, CancellationToken.None);

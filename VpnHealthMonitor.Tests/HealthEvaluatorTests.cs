@@ -159,11 +159,43 @@ public class HealthEvaluatorTests
             MonitorStatus.CheckFailed, "страну не удалось проверить");
 
         // ---- VpnDown: ping alive but HTTP + all IP APIs dead, VPN configured ---------------------
+        // Proxy-режим: своего адаптера нет, совпадать нечему — эвристика обрыва применима.
         yield return Case("VpnDown_proxy_tunnel_dropped",
             Snap(ip: null, http: false, pingSuccesses: 3),
-            Settings(expectedCountry: "KZ"),
+            Settings(expectedCountry: "KZ", routeMode: VpnRouteMode.NoSeparateAdapter),
             RollingHealthy(),
             MonitorStatus.VpnDown, "VPN, похоже, выключен");
+
+        // ---- Граница proxy-эвристики (T-403) -----------------------------------------------------
+        // Тот же набор признаков при живом ожидаемом TAP — это провал проверки, а не доказанный обрыв:
+        // адаптер держит маршрут. Ровно этот случай красил рабочий HideMy в «VPN ОТКЛЮЧЁН».
+        yield return Case("CheckFailed_separate_adapter_matches_not_vpn_down",
+            Snap(ip: null, http: false, pingSuccesses: 3, iface: "VPN Tunnel"),
+            Settings(expectedCountry: "KZ", expectedInterface: "VPN Tunnel", routeMode: VpnRouteMode.SeparateAdapter),
+            RollingHealthy(),
+            MonitorStatus.CheckFailed, "держит маршрут");
+
+        // Тот же режим, но маршрут ушёл на физический интерфейс — LeakRisk сохраняет приоритет.
+        yield return Case("LeakRisk_separate_adapter_mismatch_keeps_priority",
+            Snap(ip: null, http: false, pingSuccesses: 3, iface: "Ethernet 2"),
+            Settings(expectedCountry: "KZ", expectedInterface: "VPN Tunnel", routeMode: VpnRouteMode.SeparateAdapter),
+            RollingHealthy(),
+            MonitorStatus.LeakRisk, "VPN-маршрут сменился");
+
+        // Ping тоже мёртв — сети нет вообще, вердикт не зависит от совпадения адаптера.
+        yield return Case("NoInternet_all_probes_dead_with_matching_adapter",
+            Snap(ip: null, http: false, pingSuccesses: 0, iface: "VPN Tunnel"),
+            Settings(expectedCountry: "KZ", expectedInterface: "VPN Tunnel", routeMode: VpnRouteMode.SeparateAdapter),
+            RollingHealthy(),
+            MonitorStatus.NoInternet, "ping недоступны");
+
+        // Legacy-настройки без явного RouteMode: адаптер выглядит как VPN и совпал — прежнее
+        // безопасное поведение сохраняется, ложного «VPN ОТКЛЮЧЁН» быть не должно.
+        yield return Case("CheckFailed_legacy_null_route_mode_matching_vpn_adapter",
+            Snap(ip: null, http: false, pingSuccesses: 3, iface: "VPN Tunnel"),
+            Settings(expectedCountry: "KZ", expectedInterface: "VPN Tunnel"),
+            RollingHealthy(),
+            MonitorStatus.CheckFailed, "держит маршрут");
 
         // ---- Informational OK: baseline IP changed but all risk flags off -----------------------
         yield return Case("InformationalOk_baseline_changed",
@@ -234,9 +266,11 @@ public class HealthEvaluatorTests
         bool treatRouteAsLeak = true,
         bool enableIpv6Check = false,
         bool allowExternalIpv6 = true,
-        BaselineInfo? baseline = null)
+        BaselineInfo? baseline = null,
+        VpnRouteMode? routeMode = null)
         => new()
         {
+            RouteMode = routeMode,
             ExpectedCountry = expectedCountry,
             TreatCountryMismatchAsLeakRisk = treatCountryAsLeak,
             TreatUnexpectedIPv4AsLeakRisk = treatIpv4AsLeak,
