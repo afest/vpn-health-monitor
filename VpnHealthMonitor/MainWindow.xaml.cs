@@ -56,6 +56,12 @@ public partial class MainWindow : Window
     private DateTimeOffset? _monitoringStartedAt;
     private bool _staleChecksReported;
 
+    // Провайдеры, по которым в этой сессии уже спросили и получили отказ: цикл идёт каждые несколько
+    // секунд, и повторять вопрос по тому же выходу нельзя. Сбрасывается вместе с перезапуском.
+    private readonly HashSet<string> _declinedProviders = new(StringComparer.OrdinalIgnoreCase);
+    private bool _providerPromptOpen;
+    private NetworkSnapshot? _pendingProviderPrompt;
+
     private AppSettings _settings = new();
     private CancellationTokenSource? _monitoringCts;
     private Task? _monitoringTask;
@@ -917,6 +923,14 @@ public partial class MainWindow : Window
             SetBusyState(false);
             _checkLock.Release();
         }
+
+        // Строго вне замка: диалог ждёт ответа человека, и под _checkLock это остановило бы проверки.
+        var pending = _pendingProviderPrompt;
+        _pendingProviderPrompt = null;
+        if (pending is not null)
+        {
+            await MaybeOfferProviderAsync(pending, cancellationToken);
+        }
     }
 
     private async Task HandleResultAsync(
@@ -995,6 +1009,88 @@ public partial class MainWindow : Window
         }
 
         UpdateStatusBanner(result.Status, result.Description);
+
+        // В тихом старте молчим: при автозапуске VPN-клиент ещё поднимает туннель, и модальный вопрос
+        // про «мимо VPN» встретил бы пользователя до того, как картина вообще устоялась.
+        // Сам вопрос показывается ПОСЛЕ выхода из-под _checkLock (см. RunSingleCheckAsync): модальное
+        // окно ждёт человека сколько угодно, а держать на это время замок проверки нельзя.
+        _pendingProviderPrompt = quietStartOutcome != QuietStartOutcome.Quiet ? snapshot : null;
+    }
+
+    /// <summary>
+    /// Предлагает внести провайдера выхода в разрешённые. Без этого единственный путь — найти поле в
+    /// самом низу настроек, о котором пользователь не знает: вердикт «трафик идёт мимо VPN» он видит,
+    /// а что с ним делать — нет.
+    ///
+    /// Спрашиваем, а не добавляем сами: один и тот же признак означает либо «я переключил сервер
+    /// своего VPN», либо «туннель отвалился, и это мой домашний провайдер». Различить их может только
+    /// человек, поэтому вопрос ставится прямо, а вариант по умолчанию — ничего не добавлять.
+    /// </summary>
+    private async Task MaybeOfferProviderAsync(NetworkSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        if (_providerPromptOpen
+            || !_settings.TreatProviderChangeAsLeakRisk
+            || !HealthEvaluator.ProviderIsUnexpected(snapshot, _settings))
+        {
+            return;
+        }
+
+        var key = ProviderMatcher.Describe(snapshot.Asn, snapshot.Provider);
+        if (string.IsNullOrWhiteSpace(key) || !_declinedProviders.Add(key))
+        {
+            // Уже спрашивали про этого провайдера в этой сессии и получили «нет» — не переспрашиваем
+            // каждые несколько секунд.
+            return;
+        }
+
+        _providerPromptOpen = true;
+        try
+        {
+            // Имя VPN берём из адаптера, который держит маршрут: пользователь знает, что включил
+            // «hidemy.name», и не обязан знать, что его сервер стоит у хостера LeaseWeb.
+            var vpnName = VpnClientNaming.FromAdapterName(snapshot.InterfaceName)
+                ?? VpnClientNaming.FromAdapterName(ExpectedInterface.FromSettings(_settings).Alias);
+
+            var intro = vpnName is null
+                ? $"Сейчас интернет выходит через сервер компании «{key}»."
+                : $"Сейчас интернет выходит через сервер компании «{key}» — это площадка, "
+                  + $"на которой стоит сервер твоего VPN «{vpnName}».";
+
+            var yesLine = vpnName is null
+                ? "ДА — если ты только что сам переключил сервер или страну в своём VPN."
+                : $"ДА — если ты только что сам переключил сервер или страну в «{vpnName}».";
+
+            var answer = System.Windows.MessageBox.Show(
+                this,
+                intro + "\n\n"
+                + "Раньше этой компании в списке доверенных не было, поэтому вопрос:\n\n"
+                + yesLine + " Тогда она добавится в доверенные, и значок станет зелёным.\n\n"
+                + "НЕТ — если ты ничего не переключал. Тогда это похоже на то, что VPN отключился "
+                + "и интернет пошёл напрямую, без защиты. Проверь, включён ли VPN.\n\n"
+                + "Добавить в доверенные?",
+                "Интернет выходит через новую компанию",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            if (RememberProvider(snapshot.Asn, snapshot.Provider))
+            {
+                _declinedProviders.Remove(key);
+                await _settingsService.SaveAsync(_settings);
+                UpdateSettingsControls();
+                await AddEventAsync($"провайдер «{key}» добавлен в разрешённые", _currentStatus, snapshot, cancellationToken);
+                await ReevaluateDashboardAsync("provider-settings-change");
+            }
+        }
+        finally
+        {
+            _providerPromptOpen = false;
+        }
     }
 
     private async Task AddStatusTransitionEventsAsync(
