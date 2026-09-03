@@ -48,7 +48,12 @@ public sealed class MonitorEvent
 
     public string StatusText => Status.ToDisplayText();
 
-    public string CountryText => CountryNames.ToDisplayName(Country);
+    // «н/д», а не «Неизвестно»: события kill switch («правила применены», «адаптеры подтверждены»)
+    // сеть не опрашивают, и страну им взять неоткуда. «Неизвестно» в этой строке читается как
+    // «страну определить не удалось» — то есть как сбой проверки, которой не было.
+    public string CountryText => string.IsNullOrWhiteSpace(Country)
+        ? "н/д"
+        : CountryNames.ToDisplayName(Country);
 
     public string PingText => PingAverageMs.HasValue ? $"{PingAverageMs.Value:0} ms" : "н/д";
 
