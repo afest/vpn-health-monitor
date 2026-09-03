@@ -1,6 +1,7 @@
 using System.IO;
 using System.Threading;
 using System.Windows;
+using Velopack;
 using VpnHealthMonitor.Services;
 
 namespace VpnHealthMonitor;
@@ -18,6 +19,12 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Velopack — САМЫМ ПЕРВЫМ, до окон и до мьютекса единственного экземпляра. При установке и
+        // обновлении приложение запускается со служебными аргументами: оно обязано отработать их
+        // молча и выйти. Пустить сюда код показа окна — значит оставить висеть лишний процесс
+        // посреди установки и сорвать замену файлов.
+        VelopackApp.Build().Run();
+
         base.OnStartup(e);
 
         try

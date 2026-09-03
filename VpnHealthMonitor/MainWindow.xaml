@@ -351,12 +351,62 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border x:Name="StatusBanner"
+        <!-- Плашка обновления. Скрыта, пока обновления нет: пустая полоса над статусом отнимала бы
+             место у того, ради чего программу открывают. -->
+        <Border x:Name="UpdateBanner"
                 Grid.Row="0"
+                Background="#1F6FEB"
+                CornerRadius="8"
+                Padding="14,10"
+                Margin="0,0,0,10"
+                Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock x:Name="UpdateBannerText"
+                               Foreground="White"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               TextWrapping="Wrap"
+                               Text="Доступно обновление" />
+                    <TextBlock x:Name="UpdateBannerNotes"
+                               Foreground="#DCE7FA"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               Margin="0,3,0,0"
+                               Visibility="Collapsed" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                    <Button x:Name="UpdateInstallButton"
+                            Style="{StaticResource BannerIconButton}"
+                            Width="Auto"
+                            Padding="14,0"
+                            Content="Обновить"
+                            ToolTip="Скачать и установить обновление, программа перезапустится"
+                            Click="UpdateInstallButton_Click" />
+                    <Button x:Name="UpdateDismissButton"
+                            Style="{StaticResource BannerIconButton}"
+                            Width="Auto"
+                            Padding="12,0"
+                            Content="Позже"
+                            ToolTip="Скрыть до следующего запуска"
+                            Click="UpdateDismissButton_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border x:Name="StatusBanner"
+                Grid.Row="1"
                 Background="#606A76"
                 CornerRadius="8"
                 Padding="18"
@@ -439,7 +489,7 @@
         </Border>
 
         <!-- В ряду осталось только меню «ещё»: управление мониторингом уехало в плашку. -->
-        <Grid Grid.Row="1" Margin="0,0,0,4">
+        <Grid Grid.Row="2" Margin="0,0,0,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -455,12 +505,16 @@
                         <MenuItem x:Name="BaselineButton" Header="Текущий IP как baseline" Click="BaselineButton_Click" />
                         <MenuItem Header="Открыть папку логов" Click="OpenLogsButton_Click" />
                         <MenuItem Header="Export CSV" Click="ExportCsvButton_Click" />
+                        <Separator />
+                        <MenuItem Header="Проверить обновления" Click="CheckUpdatesMenu_Click" />
+                        <MenuItem Header="Поддержать разработку" Click="DonateMenu_Click" />
+                        <MenuItem Header="О программе" Click="AboutMenu_Click" />
                     </ContextMenu>
                 </Button.ContextMenu>
             </Button>
         </Grid>
 
-        <TabControl x:Name="MainTabs" Grid.Row="2">
+        <TabControl x:Name="MainTabs" Grid.Row="3">
             <TabItem Header="Сводка">
                 <Grid x:Name="SummaryLayout" Margin="0,12,0,0">
                     <Grid.ColumnDefinitions>
@@ -916,6 +970,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Интервал, сек" ToolTip="Пауза между автоматическими проверками при включенном мониторинге." />
@@ -1063,13 +1118,29 @@
                             <Button Content="Сохранить настройки" Style="{StaticResource PrimaryButton}" Click="SaveSettingsButton_Click" />
                             <Button Content="Перезагрузить настройки" Click="ReloadSettingsButton_Click" />
                         </StackPanel>
+
+                        <TextBlock Grid.Row="25" Grid.Column="0" Style="{StaticResource LabelText}" Text="Версия и обновления" />
+                        <StackPanel Grid.Row="25" Grid.Column="1" Margin="0,12,0,0">
+                            <TextBlock x:Name="VersionText"
+                                       Foreground="{StaticResource MutedBrush}"
+                                       FontSize="12"
+                                       Margin="0,0,0,8"
+                                       Text="Версия —" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="CheckUpdatesButton"
+                                        Content="Проверить обновления"
+                                        Click="CheckUpdatesMenu_Click" />
+                                <Button Content="Поддержать разработку" Click="DonateMenu_Click" />
+                                <Button Content="О программе" Click="AboutMenu_Click" />
+                            </StackPanel>
+                        </StackPanel>
                     </Grid>
                 </ScrollViewer>
             </TabItem>
         </TabControl>
 
         <TextBlock x:Name="FooterText"
-                   Grid.Row="3"
+                   Grid.Row="4"
                    Text="Настройки: загрузка..."
                    Foreground="{StaticResource MutedBrush}"
                    FontSize="12"

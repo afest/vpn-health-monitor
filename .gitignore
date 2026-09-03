@@ -20,3 +20,6 @@ UpgradeLog*.XML
 # T-334: сборочные артефакты установщика, не исходники
 /publish/
 /installer/Output/
+
+# Пакеты Velopack: собираются release.ps1 и уезжают в GitHub Releases, а не в репозиторий
+/Releases/

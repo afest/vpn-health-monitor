@@ -9,7 +9,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Heart.ico</ApplicationIcon>
     <!-- Держать в паре с MyAppVersion в installer\VpnHealthMonitor.iss (T-334) -->
-    <Version>1.1.7</Version>
+    <Version>1.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,14 +19,15 @@
   <!-- T-324: аварийный скрипт снятия правил должен лежать РЯДОМ с exe — он нужен именно тогда,
        когда приложение не запускается, и искать его в исходниках человек не пойдёт. -->
   <ItemGroup>
-    <Content Include="..\tools\remove-protection.ps1;..\tools\remove-protection.bat"
-             Link="tools\%(Filename)%(Extension)"
-             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\tools\remove-protection.ps1;..\tools\remove-protection.bat" Link="tools\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- T-182: grant the dev-only test project access to internal pure helpers (FirewallService.PathsMatch). -->
   <ItemGroup>
     <InternalsVisibleTo Include="VpnHealthMonitor.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 
 </Project>

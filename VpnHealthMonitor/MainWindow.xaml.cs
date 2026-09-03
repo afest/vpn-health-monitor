@@ -6,6 +6,7 @@ using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
+using Velopack;
 using VpnHealthMonitor.Models;
 using VpnHealthMonitor.Services;
 using Drawing = System.Drawing;
@@ -29,6 +30,7 @@ public partial class MainWindow : Window
     private static extern bool DestroyIcon(IntPtr hIcon);
 
     private readonly SettingsService _settingsService = new();
+    private readonly UpdateService _updateService = new();
     private readonly NetworkCheckService _networkCheckService = new();
     private readonly LogService _logService = new();
     private readonly FirewallService _firewallService = new();
@@ -116,6 +118,9 @@ public partial class MainWindow : Window
             _quietStart.Begin(DateTimeOffset.Now);
             await StartMonitoringAsync("мониторинг запущен автоматически при старте приложения");
         }
+
+        // Обновления ищем в фоне и не ждём: проверка VPN важнее и не должна упираться в сеть GitHub.
+        _ = CheckUpdatesQuietlyAsync();
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -457,6 +462,164 @@ public partial class MainWindow : Window
         await RefreshProtectedAppsAsync(logIssues: false);
     }
 
+    private async void CheckUpdatesMenu_Click(object sender, RoutedEventArgs e)
+    {
+        // Ручная проверка всегда доводится до ответа: человек нажал кнопку и ждёт результата,
+        // молчание он прочитает как поломку.
+        CheckUpdatesButton.IsEnabled = false;
+        FooterText.Text = "Проверяю обновления...";
+        try
+        {
+            var info = await _updateService.CheckAsync(quiet: false);
+            if (info is null)
+            {
+                FooterText.Text = "Обновлений нет — установлена последняя версия.";
+                System.Windows.MessageBox.Show(this,
+                    $"У тебя последняя версия ({UpdateService.CurrentVersion}).",
+                    "Обновления", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            ShowUpdateBanner(info);
+            FooterText.Text = $"Доступно обновление {UpdateService.VersionOf(info)}.";
+        }
+        catch (Exception ex)
+        {
+            FooterText.Text = "Проверить обновления не удалось.";
+            System.Windows.MessageBox.Show(this, ex.Message, "Обновления",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            CheckUpdatesButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>Фоновая проверка при старте: молчит при любой ошибке, показывает плашку при находке.</summary>
+    private async Task CheckUpdatesQuietlyAsync()
+    {
+        try
+        {
+            var info = await _updateService.CheckAsync(quiet: true, log => Debug.WriteLine(log));
+            if (info is not null)
+            {
+                ShowUpdateBanner(info);
+            }
+        }
+        catch
+        {
+            // Фоновая проверка не должна мешать работе монитора ничем.
+        }
+    }
+
+    private void ShowUpdateBanner(UpdateInfo info)
+    {
+        UpdateBannerText.Text =
+            $"Доступно обновление {UpdateService.VersionOf(info)} — сейчас {UpdateService.CurrentVersion}";
+
+        var notes = UpdateService.NotesOf(info);
+        UpdateBannerNotes.Text = notes;
+        UpdateBannerNotes.Visibility = string.IsNullOrWhiteSpace(notes)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
+        UpdateBanner.Visibility = Visibility.Visible;
+    }
+
+    private void UpdateDismissButton_Click(object sender, RoutedEventArgs e)
+        => UpdateBanner.Visibility = Visibility.Collapsed;
+
+    private async void UpdateInstallButton_Click(object sender, RoutedEventArgs e)
+    {
+        var info = _updateService.Pending;
+        if (info is null)
+        {
+            UpdateBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        UpdateInstallButton.IsEnabled = false;
+        try
+        {
+            UpdateBannerText.Text = $"Скачиваю обновление {UpdateService.VersionOf(info)}...";
+            await _updateService.DownloadAndApplyAsync(info, percent =>
+                Dispatcher.Invoke(() =>
+                    UpdateBannerText.Text = $"Скачиваю обновление {UpdateService.VersionOf(info)}... {percent}%"));
+
+            // Досюда доходим только если перезапуск не случился.
+            UpdateBannerText.Text = "Обновление загружено, перезапусти программу.";
+        }
+        catch (Exception ex)
+        {
+            UpdateBannerText.Text = "Обновиться не удалось.";
+            System.Windows.MessageBox.Show(this,
+                $"{ex.Message}\n\nМожно скачать вручную:\n{UpdateService.ReleasePageUrl(info)}",
+                "Обновления", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            UpdateInstallButton.IsEnabled = true;
+        }
+    }
+
+    // Перевод по номеру телефона (СБП, без комиссии) — тот же способ, что в SayType. Формулировка
+    // везде «поддержать разработку», а не «купить»: программа бесплатна и такой остаётся, а обещание
+    // чего-то взамен превратило бы дар в выручку.
+    private const string DonatePhone = "+7 950 541 92 21";
+    private const string DonatePhoneRaw = "+79505419221";
+
+    private void DonateMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var answer = System.Windows.MessageBox.Show(
+            this,
+            "VPN Health Monitor бесплатен и таким останется. Донат ничего не открывает "
+            + "и ни к чему не обязывает — просто способ сказать спасибо.\n\n"
+            + $"Перевод по номеру телефона (СБП, без комиссии):\n{DonatePhone}\n\n"
+            + "Скопировать номер?",
+            "Поддержать разработку",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.None,
+            MessageBoxResult.Yes);
+
+        if (answer == MessageBoxResult.Yes)
+        {
+            TrySetClipboard(DonatePhoneRaw, "Номер скопирован.");
+        }
+    }
+
+    private void AboutMenu_Click(object sender, RoutedEventArgs e)
+    {
+        var installed = UpdateService.IsAvailable
+            ? "Установленная версия — обновления работают."
+            : "Запущено не через установщик: автообновление недоступно.";
+
+        System.Windows.MessageBox.Show(
+            this,
+            $"VPN Health Monitor {UpdateService.CurrentVersion}\n\n"
+            + "Проверяет, что VPN действительно работает: внешний IP, страна, провайдер, маршрут "
+            + "по умолчанию. Умеет запретить выбранным программам выходить в интернет мимо VPN — "
+            + "правилами брандмауэра Windows.\n\n"
+            + installed + "\n\n"
+            + UpdateService.RepositoryUrl,
+            "О программе",
+            MessageBoxButton.OK,
+            MessageBoxImage.None);
+    }
+
+    private void TrySetClipboard(string text, string okMessage)
+    {
+        try
+        {
+            System.Windows.Clipboard.SetText(text);
+            FooterText.Text = okMessage;
+        }
+        catch (Exception ex)
+        {
+            // Буфер может быть занят другим процессом — это не повод падать.
+            FooterText.Text = $"Не удалось скопировать: {ex.Message}";
+        }
+    }
+
     private void OpenLogsButton_Click(object sender, RoutedEventArgs e)
     {
         SaveSettingsFromUi();
@@ -576,6 +739,10 @@ public partial class MainWindow : Window
         _settings = await _settingsService.LoadAsync();
         UpdateSettingsControls();
         FooterText.Text = $"Настройки: {AppPaths.SettingsPath} | Логи: {_settings.LogsFolderPath}";
+
+        VersionText.Text = UpdateService.IsAvailable
+            ? $"Версия {UpdateService.CurrentVersion}"
+            : $"Версия {UpdateService.CurrentVersion} — запущено не через установщик, автообновление недоступно";
     }
 
     private async Task SaveSettingsFromUiAsync()
