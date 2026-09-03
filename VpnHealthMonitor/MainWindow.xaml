@@ -267,18 +267,21 @@
         </Style>
 
         <!-- Вкладки: подчёркивание вместо объёмного «конверта» WPF по умолчанию. -->
+        <!-- Вкладки — основная навигация: в них заходят каждый раз, поэтому они крупнее кнопок
+             мониторинга, которые теперь живут иконками в плашке. -->
         <Style TargetType="TabItem">
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
                         <Border x:Name="Bg"
                                 Background="Transparent"
                                 BorderBrush="Transparent"
-                                BorderThickness="0,0,0,2"
-                                Padding="14,8"
-                                Margin="0,0,4,0">
+                                BorderThickness="0,0,0,3"
+                                Padding="20,12"
+                                Margin="0,0,6,0">
                             <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -295,6 +298,42 @@
                                 <Setter TargetName="Bg" Property="Background" Value="{StaticResource SoftBrush}" />
                                 <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
                             </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Кнопка управления мониторингом внутри цветной плашки: фон прозрачный, поэтому она читается
+             и на зелёном, и на красном, и на сером. Состояние показывает только подсветка обводки. -->
+        <Style x:Key="BannerIconButton" TargetType="Button">
+            <Setter Property="Width" Value="36" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Margin" Value="6,0,0,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg"
+                                Background="Transparent"
+                                BorderBrush="#66FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#26FFFFFF" />
+                                <Setter TargetName="Bg" Property="BorderBrush" Value="#CCFFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#40FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bg" Property="Opacity" Value="0.35" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -322,31 +361,89 @@
                 CornerRadius="8"
                 Padding="18"
                 Margin="0,0,0,12">
-            <StackPanel>
-                <TextBlock x:Name="StatusText"
-                           Text="НЕИЗВЕСТНО"
-                           Foreground="White"
-                           FontSize="30"
-                           FontWeight="Bold" />
-                <TextBlock x:Name="StatusDescriptionText"
-                           Text="Загрузи настройки и запусти проверку."
-                           Foreground="#EEF2F5"
-                           FontSize="14"
-                           TextWrapping="Wrap"
-                           Margin="0,4,0,0" />
-            </StackPanel>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0">
+                    <TextBlock x:Name="StatusText"
+                               Text="НЕИЗВЕСТНО"
+                               Foreground="White"
+                               FontSize="30"
+                               FontWeight="Bold" />
+                    <TextBlock x:Name="StatusDescriptionText"
+                               Text="Загрузи настройки и запусти проверку."
+                               Foreground="#EEF2F5"
+                               FontSize="14"
+                               TextWrapping="Wrap"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+
+                <!-- Управление мониторингом живёт в плашке: его трогают редко, а вкладки — каждый заход.
+                     Иконки линейные и белые, чтобы читаться на любом цвете статуса. -->
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Top"
+                            Margin="12,0,0,0">
+                    <Button x:Name="StartButton"
+                            Style="{StaticResource BannerIconButton}"
+                            ToolTip="Старт мониторинга"
+                            AutomationProperties.Name="Старт мониторинга"
+                            Click="StartButton_Click">
+                        <Path Data="M 6,4 L 15,10 L 6,16 Z"
+                              Stroke="White"
+                              StrokeThickness="1.6"
+                              StrokeLineJoin="Round"
+                              Fill="Transparent" />
+                    </Button>
+
+                    <Button x:Name="StopButton"
+                            Style="{StaticResource BannerIconButton}"
+                            ToolTip="Стоп мониторинга"
+                            AutomationProperties.Name="Стоп мониторинга"
+                            IsEnabled="False"
+                            Click="StopButton_Click">
+                        <Path Data="M 5.5,5.5 H 14.5 V 14.5 H 5.5 Z"
+                              Stroke="White"
+                              StrokeThickness="1.6"
+                              StrokeLineJoin="Round"
+                              Fill="Transparent" />
+                    </Button>
+
+                    <Button x:Name="RunCheckButton"
+                            Style="{StaticResource BannerIconButton}"
+                            ToolTip="Проверить сейчас"
+                            AutomationProperties.Name="Проверить сейчас"
+                            Click="RunCheckButton_Click">
+                        <!-- Дуга со стрелкой: круговое обновление. -->
+                        <Canvas Width="20" Height="20">
+                            <Path Data="M 16,10 A 6,6 0 1 1 13.8,5.3"
+                                  Stroke="White"
+                                  StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Fill="Transparent" />
+                            <Path Data="M 16,3.5 V 8 H 11.5"
+                                  Stroke="White"
+                                  StrokeThickness="1.6"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round"
+                                  Fill="Transparent" />
+                        </Canvas>
+                    </Button>
+                </StackPanel>
+            </Grid>
         </Border>
 
-        <Grid Grid.Row="1" Margin="0,0,0,12">
+        <!-- В ряду осталось только меню «ещё»: управление мониторингом уехало в плашку. -->
+        <Grid Grid.Row="1" Margin="0,0,0,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <WrapPanel Grid.Column="0">
-                <Button x:Name="StartButton" Style="{StaticResource PrimaryButton}" Content="Старт мониторинга" Click="StartButton_Click" />
-                <Button x:Name="StopButton" Content="Стоп мониторинга" Click="StopButton_Click" IsEnabled="False" />
-                <Button x:Name="RunCheckButton" Content="Проверить сейчас" Click="RunCheckButton_Click" />
-            </WrapPanel>
             <Button x:Name="MoreActionsButton"
                     Grid.Column="1"
                     Style="{StaticResource GlyphButton}"
