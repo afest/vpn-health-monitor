@@ -9,7 +9,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Heart.ico</ApplicationIcon>
     <!-- Держать в паре с MyAppVersion в installer\VpnHealthMonitor.iss (T-334) -->
-    <Version>1.2.1</Version>
+    <Version>1.2.3</Version>
   </PropertyGroup>
 
   <ItemGroup>

@@ -6,6 +6,7 @@ using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Velopack;
 using VpnHealthMonitor.Models;
 using VpnHealthMonitor.Services;
@@ -44,6 +45,9 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _checkLock = new(1, 1);
     private readonly Dictionary<TrayIconKind, Drawing.Icon> _trayIcons = new();
     private readonly Dictionary<string, bool> _lastKnownExists = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DispatcherTimer _protectedAppsTimer = new() { Interval = TimeSpan.FromSeconds(15) };
+    private bool _protectedAppsRefreshInFlight;
+    private bool _protectedAppsWatchErrorShown;
     private HashSet<string> _notifiedPathChange = new(StringComparer.OrdinalIgnoreCase);
     private AdapterInventoryResult? _adapterInventoryResult;
     private RouteCheckContext _routeCheckContext = RouteCheckContext.Unknown;
@@ -94,6 +98,7 @@ public partial class MainWindow : Window
         ProtectedAppsList.ItemsSource = _protectedAppRows;
         ApplyEventsViewMode(detailed: false);
         InitializeTrayIcon();
+        _protectedAppsTimer.Tick += ProtectedAppsTimer_Tick;
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -106,6 +111,7 @@ public partial class MainWindow : Window
         await RefreshAdapterChoicesAsync();
         UpdateDashboard(_lastSnapshot, null);
         _uiReady = true;
+        _protectedAppsTimer.Start();
 
         // Адаптеры появляются и исчезают уже после старта: VPN-служба поднимается позже логона, Wi-Fi
         // моргает, TUN пересоздаётся на реконнекте. Снимок, снятый один раз в Loaded, этого не видит.
@@ -139,6 +145,7 @@ public partial class MainWindow : Window
         }
 
         _monitoringCts?.Cancel();
+        _protectedAppsTimer.Stop();
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
 
         if (_lastSnapshot is not null)
@@ -1053,7 +1060,6 @@ public partial class MainWindow : Window
             var result = HealthEvaluator.Evaluate(snapshot, _rollingWindow, _settings, _routeCheckContext);
             await HandleResultAsync(trigger, snapshot, result, cancellationToken);
             UpdateDashboard(snapshot, result);
-            await MaybeRefreshProtectedOnChangeAsync();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -2395,8 +2401,8 @@ public partial class MainWindow : Window
             }
             await _settingsService.SaveAsync(_settings);
             await LogKillSwitchEventAsync("path_updated",
-                $"путь обновлён, правило переустановлено, старое снято: {app.Name} ({oldPath} → {newPath})", app);
-            FooterText.Text = $"Путь «{app.Name}» обновлён: правило переустановлено, старое снято.";
+                $"путь обновлён, новое правило применено, старое сохранено при наличии файла: {app.Name} ({oldPath} → {newPath})", app);
+            FooterText.Text = $"Путь «{app.Name}» обновлён. Старое правило сохраняется, пока прежний файл существует.";
             await RefreshProtectedAppsAsync(logIssues: false);
         }
         catch (Exception ex)
@@ -2558,50 +2564,27 @@ public partial class MainWindow : Window
         // (Store/MSIX packages, self-updating Claude Code CLI, and VS Code extension sidecars
         // live under different version schemes).
         var baseStatus = new Dictionary<ProtectedApp, ProtectionStatus>();
-        var movedQueryPaths = new List<string>();
-        var cliQueryPaths = new List<string>();
-        var vscodeExtensionQueryPaths = new List<string>();
+        var appxQueryPaths = new List<string>();
         foreach (var app in _settings.ProtectedApps)
         {
             var status = canVerifyLive
                 ? FirewallService.ComputeStatus(app, rules!)
                 : FirewallService.ComputeStatusFromRecord(app);
             baseStatus[app] = status;
-            if (status == ProtectionStatus.FileNotFound)
+            if (status == ProtectionStatus.FileNotFound && AppxPathResolver.IsPackagedPath(app.Path))
             {
-                if (AppxPathResolver.IsPackagedPath(app.Path))
-                {
-                    movedQueryPaths.Add(app.Path);
-                }
-                else if (CliPathResolver.IsCliVersionedPath(app.Path))
-                {
-                    cliQueryPaths.Add(app.Path);
-                }
-                else if (VsCodeExtensionPathResolver.IsVersionedExtensionPath(app.Path))
-                {
-                    vscodeExtensionQueryPaths.Add(app.Path);
-                }
+                appxQueryPaths.Add(app.Path);
             }
         }
 
-        var moved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (movedQueryPaths.Count > 0)
+        // Versioned sidecars can be replaced while the old extension or CLI folder still exists.
+        // A live firewall rule for that old file does not protect the executable now in use.
+        var moved = new Dictionary<string, string>(
+            VersionedProtectedAppPathResolver.Resolve(_settings.ProtectedApps),
+            StringComparer.OrdinalIgnoreCase);
+        if (appxQueryPaths.Count > 0)
         {
-            foreach (var kvp in await _appxResolver.ResolveMovedPathsAsync(movedQueryPaths, CancellationToken.None))
-            {
-                moved[kvp.Key] = kvp.Value;
-            }
-        }
-        if (cliQueryPaths.Count > 0)
-        {
-            foreach (var kvp in CliPathResolver.ResolveMovedPaths(cliQueryPaths))
-            {
-                moved[kvp.Key] = kvp.Value;
-            }
-        }
-        if (vscodeExtensionQueryPaths.Count > 0)
-        {
-            foreach (var kvp in VsCodeExtensionPathResolver.ResolveMovedPaths(vscodeExtensionQueryPaths))
+            foreach (var kvp in await _appxResolver.ResolveMovedPathsAsync(appxQueryPaths, CancellationToken.None))
             {
                 moved[kvp.Key] = kvp.Value;
             }
@@ -2614,7 +2597,7 @@ public partial class MainWindow : Window
         {
             var status = baseStatus[app];
             string? newPath = null;
-            if (status == ProtectionStatus.FileNotFound && moved.TryGetValue(app.Path, out var resolved))
+            if (moved.TryGetValue(app.Path, out var resolved))
             {
                 status = ProtectionStatus.PathChanged;
                 newPath = resolved;
@@ -2641,11 +2624,11 @@ public partial class MainWindow : Window
                     // (bypassCooldown, без toggle) — цель «заметнее, не тише».
                     ShowNotification(
                         "⚠️ Защита приложения не действует",
-                        $"у «{app.Name}» сменился путь после обновления — kill-switch больше НЕ закрывает прямой выход. Открой вкладку «Защищённые приложения» и нажми «Обновить путь».",
+                        $"у «{app.Name}» найдена новая версия — её прямой выход ещё не заблокирован. Открой вкладку «Защищённые приложения» и нажми «Обновить путь».",
                         Forms.ToolTipIcon.Error,
                         bypassCooldown: true);
                     await LogKillSwitchEventAsync("path_changed",
-                        $"путь изменился после обновления, защита не действует: {app.Name} ({app.Path} → {newPath})", app);
+                        $"новая версия не защищена правилом: {app.Name} ({app.Path} → {newPath})", app);
                 }
             }
 
@@ -2751,9 +2734,38 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Cheap per-tick guard: only escalate to a full refresh (which spawns PowerShell) when a
-    /// protected exe appears/disappears — e.g. a Store/MSIX app updated to a new versioned path.
+    /// Protection path checks run independently of VPN health checks: a stale firewall path must
+    /// still be reported when monitoring is stopped or a network probe hangs.
     /// </summary>
+    private async void ProtectedAppsTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_protectedAppsRefreshInFlight)
+        {
+            return;
+        }
+
+        _protectedAppsRefreshInFlight = true;
+        try
+        {
+            await MaybeRefreshProtectedOnChangeAsync();
+            _protectedAppsWatchErrorShown = false;
+        }
+        catch (Exception)
+        {
+            if (!_protectedAppsWatchErrorShown)
+            {
+                _protectedAppsWatchErrorShown = true;
+                ShowNotification("⚠️ Проверка защиты не удалась",
+                    "Не удалось проверить пути защищённых программ. Открой вкладку «Защищённые приложения».",
+                    Forms.ToolTipIcon.Error, bypassCooldown: true);
+            }
+        }
+        finally
+        {
+            _protectedAppsRefreshInFlight = false;
+        }
+    }
+
     private async Task MaybeRefreshProtectedOnChangeAsync()
     {
         if (_settings.ProtectedApps.Count == 0)
@@ -2761,19 +2773,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        var changed = false;
+        var changed = VersionedProtectedAppPathResolver.Resolve(_settings.ProtectedApps).Count > 0;
         foreach (var app in _settings.ProtectedApps)
         {
             var key = AppIdentityKey(app);
             var exists = SafeExists(app.Path);
-            if (_lastKnownExists.TryGetValue(key, out var previous))
+            if (_lastKnownExists.TryGetValue(key, out var previous) && previous != exists)
             {
-                if (previous != exists)
-                {
-                    changed = true;
-                }
+                changed = true;
             }
-            else
+            else if (!_lastKnownExists.ContainsKey(key))
             {
                 _lastKnownExists[key] = exists;
             }

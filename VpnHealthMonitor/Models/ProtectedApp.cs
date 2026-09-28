@@ -43,8 +43,8 @@ public enum ProtectionStatus
     FileNotFound,
 
     /// <summary>
-    /// The stored path is gone, but the same Store/MSIX package was found at a new (versioned) path.
-    /// The rule still points at the dead path, so protection is NOT in effect until the path is updated.
+    /// A newer versioned executable was found. The rule still points at the saved path,
+    /// so the newer executable is not protected until the path is updated.
     /// </summary>
     PathChanged,
 
@@ -90,7 +90,7 @@ public static class ProtectionStatusText
         ProtectionStatus.Protected => "Правило есть и указывает на текущий .exe — прямой выход закрыт.",
         ProtectionStatus.RulesNotApplied => "Правило ещё не создано. Нажми «Применить правила» (запросит UAC).",
         ProtectionStatus.FileNotFound => "Файла по сохранённому пути нет: программа удалена или переустановлена в другое место.",
-        ProtectionStatus.PathChanged => "Правило указывает на мёртвый путь — защита НЕ действует. Нажми «Обновить путь».",
+        ProtectionStatus.PathChanged => "Найдена новая версия программы: правило ещё не закрывает её прямой выход. Нажми «Обновить путь».",
         ProtectionStatus.Untracked => "Правило в Windows есть и работает, но программы нет в списке защищённых — приложение не следит за её состоянием. Нажми «Взять под наблюдение».",
         _ => "Статус не определён: правило не соответствует ожидаемому или запрос к firewall не прошёл."
     };

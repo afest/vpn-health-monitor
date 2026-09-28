@@ -197,9 +197,9 @@ public sealed class FirewallService
     }
 
     /// <summary>
-    /// Move a protected app's rule to a new path in a single elevated step: sweep dead orphan rules
-    /// for the same exe (accumulated across prior versions), drop the recorded old rule, then create
-    /// the rule for the new path. <paramref name="appWithNewPath"/> already carries the new Path/RuleName.
+    /// Protect a new versioned path in a single elevated step. Install the new rule first; retain
+    /// the old rule while its executable still exists because an old sidecar may still be running.
+    /// <paramref name="appWithNewPath"/> already carries the new Path/RuleName.
     /// </summary>
     public Task<FirewallActionResult> UpdatePathAsync(
         ProtectedApp appWithNewPath,
@@ -441,27 +441,39 @@ try {
       foreach ($app in $job.apps) {
         $item = [ordered]@{ ruleName = [string]$app.ruleName; path = [string]$app.path; state = '' }
         try {
-            $targetFile = [System.IO.Path]::GetFileName([string]$app.path)
-            if ($app.sweepDeadOrphans) {
-                Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | ForEach-Object {
-                    $pf = $_ | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue
-                    $prog = [string]$pf.Program
-                    if ($prog -and ([System.IO.Path]::GetFileName($prog) -ieq $targetFile) -and (-not (Test-Path -LiteralPath $prog))) {
-                        $_ | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-                    }
-                }
-            }
-            if ($app.oldRuleName) {
-                Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $app.oldRuleName } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-            }
-            Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $app.ruleName } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
             if (-not (Test-Path -LiteralPath $app.path)) {
                 $item.state = 'file_not_found'
             } elseif (@($phys).Count -eq 0) {
                 throw 'Adapter list for blocking is empty'
             } else {
-                New-NetFirewallRule -DisplayName $app.ruleName -Description 'VPN Health Monitor per-app kill switch. Blocks direct egress on physical NICs.' -Direction Outbound -Program $app.path -InterfaceAlias $phys -Action Block -Profile Any -Enabled True | Out-Null
+                # Install and verify the new protection before touching the old rule.
+                Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $app.ruleName } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                $created = New-NetFirewallRule -DisplayName $app.ruleName -Description 'VPN Health Monitor per-app kill switch. Blocks direct egress on physical NICs.' -Direction Outbound -Program $app.path -InterfaceAlias $phys -Action Block -Profile Any -Enabled True -ErrorAction Stop
+                if (-not $created -or [string](($created | Get-NetFirewallApplicationFilter).Program) -ine [string]$app.path) {
+                    throw 'New firewall rule could not be verified'
+                }
                 $item.state = 'applied'
+
+                # VS Code may continue running the previous sidecar while the new extension folder
+                # already exists. Keep that rule until its executable disappears from disk.
+                if ($app.oldRuleName) {
+                    Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $app.oldRuleName } | ForEach-Object {
+                        $oldProgram = [string](($_ | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program)
+                        if (-not $oldProgram -or -not (Test-Path -LiteralPath $oldProgram)) {
+                            $_ | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+                if ($app.sweepDeadOrphans) {
+                    $targetFile = [System.IO.Path]::GetFileName([string]$app.path)
+                    Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | ForEach-Object {
+                        $pf = $_ | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue
+                        $prog = [string]$pf.Program
+                        if ($prog -and ([System.IO.Path]::GetFileName($prog) -ieq $targetFile) -and (-not (Test-Path -LiteralPath $prog))) {
+                            $_ | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
             }
         } catch {
             $item.state = 'error'
