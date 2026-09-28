@@ -2623,10 +2623,11 @@ public partial class MainWindow : Window
                     // рутинных балунов (Error-иконка + ⚠️-префикс + слово «защита»), всегда показываем
                     // (bypassCooldown, без toggle) — цель «заметнее, не тише».
                     ShowNotification(
-                        "⚠️ Защита приложения не действует",
+                        "⚠️ Новая версия без защиты",
                         $"у «{app.Name}» найдена новая версия — её прямой выход ещё не заблокирован. Открой вкладку «Защищённые приложения» и нажми «Обновить путь».",
                         Forms.ToolTipIcon.Error,
-                        bypassCooldown: true);
+                        bypassCooldown: true,
+                        respectQuietStart: false);
                     await LogKillSwitchEventAsync("path_changed",
                         $"новая версия не защищена правилом: {app.Name} ({app.Path} → {newPath})", app);
                 }
@@ -2757,7 +2758,7 @@ public partial class MainWindow : Window
                 _protectedAppsWatchErrorShown = true;
                 ShowNotification("⚠️ Проверка защиты не удалась",
                     "Не удалось проверить пути защищённых программ. Открой вкладку «Защищённые приложения».",
-                    Forms.ToolTipIcon.Error, bypassCooldown: true);
+                    Forms.ToolTipIcon.Error, bypassCooldown: true, respectQuietStart: false);
             }
         }
         finally
