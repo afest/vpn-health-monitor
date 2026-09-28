@@ -35,6 +35,9 @@ public sealed class AppSettings
     /// </summary>
     public string ExpectedInterfaceId { get; set; } = string.Empty;
 
+    /// <summary>Known VPN adapters. When populated, this list replaces the single legacy expected adapter.</summary>
+    public List<string> AllowedVpnInterfaces { get; set; } = new();
+
     /// <summary>
     /// How this VPN integrates with Windows routing. Null means a legacy settings file written before
     /// the explicit choice existed. Legacy configuration is accepted as a tunnel only when the saved

@@ -21,21 +21,21 @@ public static class HealthEvaluator
             return RouteCheckState.Disabled;
         }
 
-        var expected = ExpectedInterface.FromSettings(settings);
-        if (expected.IsEmpty)
+        var expected = ExpectedInterface.AllFromSettings(settings);
+        if (expected.Count == 0)
         {
             return RouteCheckState.NeedsConfiguration;
         }
 
         // A legacy settings file has no explicit mode. Preserve a real VPN-looking adapter, but never
         // reinterpret a physical Wi-Fi/Ethernet baseline as a useful tunnel check.
-        if (settings.RouteMode is null && !VpnInterfaceHeuristics.LooksLikeVpn(expected.Display))
+        if (settings.RouteMode is null && !expected.Any(adapter => VpnInterfaceHeuristics.LooksLikeVpn(adapter.Display)))
         {
             return RouteCheckState.NeedsConfiguration;
         }
 
         context ??= RouteCheckContext.Unknown;
-        if (context.InventoryAvailable && !context.Contains(expected))
+        if (context.InventoryAvailable && !expected.Any(context.Contains))
         {
             return RouteCheckState.NeedsConfiguration;
         }
@@ -93,16 +93,20 @@ public static class HealthEvaluator
         var unexpectedExternalIPv6 = settings.EnableIPv6LeakCheck
             && !settings.AllowExternalIPv6
             && !string.IsNullOrWhiteSpace(snapshot.ExternalIPv6);
-        var expectedInterface = ExpectedInterface.FromSettings(settings);
+        var expectedInterfaces = ExpectedInterface.AllFromSettings(settings);
         var expectedInterfaceName = GetExpectedInterfaceName(settings);
         var defaultRouteMismatch = routeCheck == RouteCheckState.Active
-            && !expectedInterface.IsEmpty
-            && !ExpectedInterface.MatchesDisplay(expectedInterface, snapshot.InterfaceName);
+            && expectedInterfaces.Count > 0
+            && !expectedInterfaces.Any(expected => ExpectedInterface.MatchesDisplay(expected, snapshot.InterfaceName));
 
         // Наблюдаемый факт: трафик наружу идёт через тот самый VPN-адаптер, который ждали. Считается
         // независимо от RouteMode — настройка описывает намерение, а этот флаг описывает состояние.
-        var expectedInterfaceMatches = !expectedInterface.IsEmpty
-            && ExpectedInterface.MatchesDisplay(expectedInterface, snapshot.InterfaceName);
+        var expectedInterfaceMatches = expectedInterfaces.Any(expected =>
+            ExpectedInterface.MatchesDisplay(expected, snapshot.InterfaceName));
+        // A rotating exit IP is acceptable only when three independent observations still identify
+        // a configured VPN: its live adapter, its exit ASN and its country. The fixed-IP check stays
+        // strict for every other route, including a missing/unknown signal.
+        var trustedKnownVpnExit = IsTrustedKnownVpnExit(snapshot, settings, routeCheck);
 
         if (!snapshot.IpLookupSucceeded && !internetAvailable)
         {
@@ -193,14 +197,15 @@ public static class HealthEvaluator
                 + "Похоже, трафик идёт мимо VPN. Если это твой же VPN на другом сервере — добавь провайдера в список.");
         }
 
-        if (settings.TreatUnexpectedIPv4AsLeakRisk && expectedIpMismatch)
+        if (settings.TreatUnexpectedIPv4AsLeakRisk && expectedIpMismatch && !trustedKnownVpnExit)
         {
             return Result(MonitorStatus.LeakRisk, "Внешний IPv4 не входит в список разрешенных IP.");
         }
 
         if (settings.TreatUnexpectedIPv4AsLeakRisk
             && baselineIpChanged
-            && !settings.AllowIpChangesWithinExpectedCountry)
+            && !settings.AllowIpChangesWithinExpectedCountry
+            && !trustedKnownVpnExit)
         {
             return Result(MonitorStatus.LeakRisk, "Внешний IPv4 изменился, а смена IP запрещена настройками.");
         }
@@ -244,6 +249,12 @@ public static class HealthEvaluator
                 $"Страна изменилась: ожидалось {CountryNames.ToDisplayName(settings.ExpectedCountry)}, сейчас {CountryNames.ToDisplayName(snapshot.Country)}. Риск по стране выключен.");
         }
 
+        if (trustedKnownVpnExit && (baselineIpChanged || expectedIpMismatch))
+        {
+            return Result(MonitorStatus.Ok,
+                "OK · новый IPv4 подтверждён известным VPN-интерфейсом, страной и провайдером.");
+        }
+
         if (settings.TreatUnexpectedIPv4AsLeakRisk
             && baselineIpChanged
             && settings.AllowIpChangesWithinExpectedCountry)
@@ -281,6 +292,30 @@ public static class HealthEvaluator
             ProviderMatcher.IsSameProvider(allowed.Asn, allowed.Name, snapshot.Asn, snapshot.Provider));
     }
 
+    /// <summary>Only an exit confirmed by the configured adapter, country and ASN may rotate its IP.</summary>
+    public static bool IsTrustedKnownVpnExit(
+        NetworkSnapshot snapshot, AppSettings settings, RouteCheckState routeCheck)
+    {
+        if (settings.AllowedVpnInterfaces.Count == 0
+            || routeCheck != RouteCheckState.Active
+            || string.IsNullOrWhiteSpace(snapshot.InterfaceName)
+            || string.Equals(snapshot.InterfaceName, "Unknown", StringComparison.OrdinalIgnoreCase)
+            || !ExpectedInterface.AllFromSettings(settings).Any(expected =>
+                ExpectedInterface.MatchesDisplay(expected, snapshot.InterfaceName))
+            || !settings.TreatProviderChangeAsLeakRisk
+            || settings.AllowedProviders.Count == 0
+            || ProviderMatcher.IsUnknown(snapshot.Asn, snapshot.Provider)
+            || ProviderIsUnexpected(snapshot, settings)
+            || !settings.TreatCountryMismatchAsLeakRisk
+            || string.IsNullOrWhiteSpace(settings.ExpectedCountry)
+            || string.IsNullOrWhiteSpace(snapshot.Country))
+        {
+            return false;
+        }
+
+        return CountryMatches(settings.ExpectedCountry, snapshot.Country);
+    }
+
     private static HealthResult Result(MonitorStatus status, string description)
     {
         return new HealthResult
@@ -303,10 +338,10 @@ public static class HealthEvaluator
             return false;
         }
 
-        var expected = CountryNames.NormalizeCountryCode(expectedCountry);
         var actual = CountryNames.NormalizeCountryCode(actualCountry);
-
-        return string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase);
+        return expectedCountry.Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(CountryNames.NormalizeCountryCode)
+            .Any(expected => string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string GetExpectedInterfaceName(AppSettings settings)
@@ -314,6 +349,11 @@ public static class HealthEvaluator
         if (settings.RouteMode == VpnRouteMode.NoSeparateAdapter)
         {
             return string.Empty;
+        }
+
+        if (settings.AllowedVpnInterfaces.Count > 0)
+        {
+            return string.Join("; ", settings.AllowedVpnInterfaces);
         }
 
         if (!string.IsNullOrWhiteSpace(settings.ExpectedInterfaceName))

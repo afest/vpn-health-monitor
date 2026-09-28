@@ -53,6 +53,27 @@ public sealed record ExpectedInterfaceIdentity(string Alias, string Description,
 
 public static class ExpectedInterface
 {
+    /// <summary>Configured VPN adapters; an explicit list replaces the legacy single adapter.</summary>
+    public static IReadOnlyList<ExpectedInterfaceIdentity> AllFromSettings(AppSettings settings)
+    {
+        if (settings.RouteMode == VpnRouteMode.NoSeparateAdapter)
+        {
+            return Array.Empty<ExpectedInterfaceIdentity>();
+        }
+
+        if (settings.AllowedVpnInterfaces.Count > 0)
+        {
+            return settings.AllowedVpnInterfaces
+                .Select(SplitDisplay)
+                .Select(parts => new ExpectedInterfaceIdentity(parts.Alias, parts.Description, string.Empty))
+                .Where(identity => !identity.IsEmpty)
+                .ToList();
+        }
+
+        var legacy = FromSettings(settings);
+        return legacy.IsEmpty ? Array.Empty<ExpectedInterfaceIdentity>() : new[] { legacy };
+    }
+
     /// <summary>
     /// Reads the expected adapter out of settings. Prefers the split fields; falls back to parsing the
     /// legacy composite string, then to the baseline — so a settings file written by an older build keeps

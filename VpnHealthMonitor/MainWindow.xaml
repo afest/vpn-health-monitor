@@ -984,7 +984,7 @@
                         <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelText}" Text="Интервал, сек" ToolTip="Пауза между автоматическими проверками при включенном мониторинге." />
                         <TextBox x:Name="IntervalTextBox" Grid.Row="0" Grid.Column="1" Text="5" />
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="Ожидаемая страна" ToolTip="Ожидаемая страна VPN. Можно писать полное название или код, например Швеция или SE." />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelText}" Text="Разрешённые страны" ToolTip="Одна страна или несколько через запятую: Германия, Нидерланды, Франция, Казахстан." />
                         <TextBox x:Name="ExpectedCountryTextBox" Grid.Row="1" Grid.Column="1" />
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по стране" ToolTip="Если включено, другая страна относительно ожидаемой даст «РИСК УТЕЧКИ»." />
@@ -1014,14 +1014,18 @@
                                       Margin="0,6,0,0"
                                       IsEditable="True"
                                       IsTextSearchEnabled="False"
-                                      ToolTip="Выбери VPN-адаптер из списка Windows. Ручной ввод оставлен для нестандартных или скрытых адаптеров." />
+                                      ToolTip="Один ожидаемый VPN-адаптер для прежних настроек. Если задан список ниже, используется список." />
+                            <TextBlock Style="{StaticResource LabelText}" Margin="0,8,0,0" Text="Разрешённые VPN-интерфейсы (по одному в строке)" />
+                            <TextBox x:Name="AllowedVpnInterfacesTextBox" AcceptsReturn="True" MinHeight="72"
+                                     VerticalScrollBarVisibility="Auto"
+                                     ToolTip="Когда список заполнен, выход через любой из этих VPN-адаптеров принимается; выход через Wi-Fi/Ethernet даёт риск." />
                             <TextBlock x:Name="RouteModeHintText"
                                        Style="{StaticResource LabelText}"
                                        Margin="0,4,0,0"
                                        TextWrapping="Wrap" />
                         </StackPanel>
 
-                        <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по маршруту VPN" ToolTip="Если включено, уход default route с ожидаемого VPN-интерфейса даст «РИСК УТЕЧКИ», даже если IP API временно не ответили." />
+                        <TextBlock Grid.Row="7" Grid.Column="0" Style="{StaticResource LabelText}" Text="Риск по маршруту VPN" ToolTip="Если включено, уход маршрута со всех разрешённых VPN-интерфейсов даст «РИСК УТЕЧКИ», даже если IP API временно не ответили." />
                         <CheckBox x:Name="RouteRiskCheckBox" Grid.Row="7" Grid.Column="1" Margin="0,4,0,12" IsChecked="True" />
 
                         <TextBlock Grid.Row="8" Grid.Column="0" Style="{StaticResource LabelText}" Text="IPv6 leak check" ToolTip="Если включено, приложение пробует получить внешний IPv6 через IPv6-only endpoint'ы." />

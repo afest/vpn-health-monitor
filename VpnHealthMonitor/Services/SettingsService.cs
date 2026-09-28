@@ -74,6 +74,12 @@ public sealed class SettingsService
         settings.HttpProbeUrls ??= new List<string>();
         settings.PingHosts ??= new List<string>();
         settings.AllowedProviders ??= new List<ProviderIdentity>();
+        settings.AllowedVpnInterfaces ??= new List<string>();
+        settings.AllowedVpnInterfaces = settings.AllowedVpnInterfaces
+            .Select(name => name?.Trim() ?? string.Empty)
+            .Where(name => name.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         settings.DegradedPingThresholdMs = Math.Max(1, settings.DegradedPingThresholdMs);
         settings.DegradedPacketLossThresholdPercent = Math.Clamp(settings.DegradedPacketLossThresholdPercent, 0, 100);
 

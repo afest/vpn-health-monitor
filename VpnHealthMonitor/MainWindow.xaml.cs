@@ -77,6 +77,7 @@ public partial class MainWindow : Window
     private NetworkSnapshot? _lastSnapshot;
     private MonitorStatus _currentStatus = MonitorStatus.Unknown;
     private string? _lastIp;
+    private string? _lastConfirmedVpnInterface;
     private DateTimeOffset? _lastSuccessfulCheckAt;
     private DateTimeOffset? _lastIpChangeAt;
     private DateTimeOffset? _lastNotificationAt;
@@ -801,6 +802,7 @@ public partial class MainWindow : Window
         _settings.AllowIpChangesWithinExpectedCountry = AllowIpChangesCheckBox.IsChecked == true;
         _settings.RouteMode = GetSelectedRouteMode();
         SetExpectedInterface((ExpectedInterfaceBox.Text ?? string.Empty).Trim());
+        _settings.AllowedVpnInterfaces = SplitLines(AllowedVpnInterfacesTextBox.Text);
         _settings.TreatDefaultRouteChangeAsLeakRisk = RouteRiskCheckBox.IsChecked == true;
         _settings.EnableIPv6LeakCheck = Ipv6CheckBox.IsChecked == true;
         _settings.AllowExternalIPv6 = AllowExternalIpv6CheckBox.IsChecked == true;
@@ -842,6 +844,7 @@ public partial class MainWindow : Window
         AllowIpChangesCheckBox.IsChecked = _settings.AllowIpChangesWithinExpectedCountry;
         SetSelectedRouteMode(_settings.RouteMode ?? VpnRouteMode.SeparateAdapter);
         ExpectedInterfaceBox.Text = GetExpectedInterfaceName(_settings);
+        AllowedVpnInterfacesTextBox.Text = string.Join(Environment.NewLine, _settings.AllowedVpnInterfaces);
         RouteRiskCheckBox.IsChecked = _settings.TreatDefaultRouteChangeAsLeakRisk;
         Ipv6CheckBox.IsChecked = _settings.EnableIPv6LeakCheck;
         AllowExternalIpv6CheckBox.IsChecked = _settings.AllowExternalIPv6;
@@ -931,16 +934,18 @@ public partial class MainWindow : Window
 
     private void UpdateRouteModeControls()
     {
-        if (ExpectedInterfaceBox is null || RouteRiskCheckBox is null || RouteModeHintText is null)
+        if (ExpectedInterfaceBox is null || AllowedVpnInterfacesTextBox is null
+            || RouteRiskCheckBox is null || RouteModeHintText is null)
         {
             return;
         }
 
         var usesAdapter = GetSelectedRouteMode() == VpnRouteMode.SeparateAdapter;
         ExpectedInterfaceBox.IsEnabled = usesAdapter;
+        AllowedVpnInterfacesTextBox.IsEnabled = usesAdapter;
         RouteRiskCheckBox.IsEnabled = usesAdapter;
         RouteModeHintText.Text = usesAdapter
-            ? "Выбери адаптер именно своего VPN. Поле «Активный интерфейс» на Сводке остаётся фактом Windows."
+            ? "Если используешь несколько VPN, перечисли все их адаптеры ниже. Поле «Активный интерфейс» на Сводке остаётся фактом Windows."
             : "Default route останется на Wi-Fi/Ethernet. Маршрут не проверяется; включи риск по стране и/или ASN/провайдеру.";
     }
 
@@ -1120,6 +1125,13 @@ public partial class MainWindow : Window
         var previousStatus = _currentStatus;
         var previousIp = _lastIp;
         var internetAvailable = snapshot.HttpAvailable || snapshot.PingSuccesses > 0;
+        var currentVpnInterface = (result.Status is MonitorStatus.Ok or MonitorStatus.Degraded)
+            && HealthEvaluator.IsTrustedKnownVpnExit(snapshot, _settings, result.RouteCheck)
+            ? snapshot.InterfaceName
+            : null;
+        var vpnInterfaceChanged = currentVpnInterface is not null
+            && _lastConfirmedVpnInterface is not null
+            && !string.Equals(_lastConfirmedVpnInterface, currentVpnInterface, StringComparison.OrdinalIgnoreCase);
 
         if (snapshot.IpLookupSucceeded)
         {
@@ -1140,6 +1152,21 @@ public partial class MainWindow : Window
 
         _internetWasAvailable = internetAvailable;
 
+        if (vpnInterfaceChanged)
+        {
+            await AddEventAsync(
+                $"VPN-интерфейс изменился: {_lastConfirmedVpnInterface} -> {currentVpnInterface}",
+                result.Status, snapshot, cancellationToken);
+            ShowNotification("VPN Health Monitor: VPN переключился",
+                $"{_lastConfirmedVpnInterface} -> {currentVpnInterface}", Forms.ToolTipIcon.Info,
+                bypassCooldown: true);
+        }
+
+        if (currentVpnInterface is not null)
+        {
+            _lastConfirmedVpnInterface = currentVpnInterface;
+        }
+
         if (!string.IsNullOrWhiteSpace(previousIp)
             && !string.IsNullOrWhiteSpace(snapshot.ExternalIPv4)
             && !string.Equals(previousIp, snapshot.ExternalIPv4, StringComparison.OrdinalIgnoreCase))
@@ -1148,7 +1175,7 @@ public partial class MainWindow : Window
             await AddEventAsync($"IP изменился: {previousIp} -> {snapshot.ExternalIPv4}", result.Status, snapshot, cancellationToken);
             // Балун только по факту смены IP — шум; гейтится отдельным toggle (детект/лог выше не трогаются).
             // Смена страны идёт своим балуном через MaybeShowStatusNotification (CountryChanged), не этим.
-            if (_settings.NotifyIpChanged)
+            if (_settings.NotifyIpChanged && !vpnInterfaceChanged)
             {
                 ShowNotification(
                     "VPN Health Monitor: IP изменился",
@@ -1198,9 +1225,8 @@ public partial class MainWindow : Window
     /// <summary>
     /// Предлагает обновить ожидаемую страну, когда выход уехал в другую.
     ///
-    /// В отличие от провайдеров, страна НЕ копится списком: ожидание всегда одна конкретная страна,
-    /// диалог её заменяет. Список стран означал бы «мне всё равно, где я выхожу», а проверка по стране —
-    /// главный сигнал обрыва туннеля у тех, чей VPN выходит не в родной стране.
+    /// В настройке с несколькими странами новый подтверждённый выход добавляется к списку;
+    /// для старой настройки с одной страной сохраняется прежняя замена.
     /// </summary>
     private async Task MaybeOfferCountryAsync(NetworkSnapshot snapshot, CancellationToken cancellationToken)
     {
@@ -1214,7 +1240,8 @@ public partial class MainWindow : Window
         }
 
         var actual = CountryNames.ToDisplayName(snapshot.Country);
-        var expected = CountryNames.ToDisplayName(_settings.ExpectedCountry);
+        var expected = _settings.ExpectedCountry;
+        var countryList = expected.IndexOfAny(new[] { ',', ';', '\n', '\r' }) >= 0;
         if (string.IsNullOrWhiteSpace(actual) || !_declinedCountries.Add(actual))
         {
             return;
@@ -1224,15 +1251,19 @@ public partial class MainWindow : Window
         try
         {
             var vpnName = VpnClientNaming.FromAdapterName(snapshot.InterfaceName)
-                ?? VpnClientNaming.FromAdapterName(ExpectedInterface.FromSettings(_settings).Alias);
+                ?? (_settings.AllowedVpnInterfaces.Count == 0
+                    ? VpnClientNaming.FromAdapterName(ExpectedInterface.FromSettings(_settings).Alias)
+                    : null);
             var yesLine = vpnName is null
                 ? "ДА — если ты только что сам выбрал другую страну в своём VPN."
                 : $"ДА — если ты только что сам выбрал другую страну в «{vpnName}».";
 
             var answer = System.Windows.MessageBox.Show(
                 this,
-                $"Раньше интернет выходил в стране {expected}, а сейчас выходит в стране {actual}.\n\n"
-                + yesLine + $" Тогда программа будет ждать {actual} и перестанет ругаться.\n\n"
+                $"Разрешённые страны: {expected}. Сейчас выход определяется как {actual}.\n\n"
+                + yesLine + (countryList
+                    ? $" Тогда {actual} добавится к разрешённым странам.\n\n"
+                    : $" Тогда программа будет ждать {actual} и перестанет ругаться.\n\n")
                 + "НЕТ — если ты страну не менял. Тогда это тревожный признак: возможно, VPN отключился "
                 + "и интернет пошёл напрямую. Проверь, включён ли VPN.\n\n"
                 + $"Считать {actual} правильной страной?",
@@ -1247,7 +1278,7 @@ public partial class MainWindow : Window
             }
 
             _declinedCountries.Remove(actual);
-            _settings.ExpectedCountry = actual;
+            _settings.ExpectedCountry = countryList ? $"{expected}, {actual}" : actual;
             await _settingsService.SaveAsync(_settings);
             UpdateSettingsControls();
             await AddEventAsync($"ожидаемая страна изменена: {expected} -> {actual}", _currentStatus, snapshot, cancellationToken);
@@ -1291,7 +1322,9 @@ public partial class MainWindow : Window
             // Имя VPN берём из адаптера, который держит маршрут: пользователь знает, что включил
             // «hidemy.name», и не обязан знать, что его сервер стоит у хостера LeaseWeb.
             var vpnName = VpnClientNaming.FromAdapterName(snapshot.InterfaceName)
-                ?? VpnClientNaming.FromAdapterName(ExpectedInterface.FromSettings(_settings).Alias);
+                ?? (_settings.AllowedVpnInterfaces.Count == 0
+                    ? VpnClientNaming.FromAdapterName(ExpectedInterface.FromSettings(_settings).Alias)
+                    : null);
 
             var intro = vpnName is null
                 ? $"Сейчас интернет выходит через сервер компании «{key}»."
@@ -1445,6 +1478,7 @@ public partial class MainWindow : Window
         _rollingWindow.Clear();
         _lastSuccessfulCheckAt = null;
         _lastIpChangeAt = null;
+        _lastConfirmedVpnInterface = null;
         _healthySince = null;
         _problemStartedAt = null;
         _totalProblemTime = TimeSpan.Zero;
@@ -1485,12 +1519,14 @@ public partial class MainWindow : Window
 
         ExpectedCountryText.Text = string.IsNullOrWhiteSpace(_settings.ExpectedCountry)
             ? "Не задано"
-            : CountryNames.ToDisplayName(_settings.ExpectedCountry);
+            : _settings.ExpectedCountry;
         ExpectedIpText.Text = _settings.ExpectedPublicIPv4.Count == 0
             ? "Не задано"
             : string.Join(", ", _settings.ExpectedPublicIPv4);
         var routeState = result?.RouteCheck ?? HealthEvaluator.GetRouteCheckState(_settings, _routeCheckContext);
-        var expectedInterface = GetExpectedInterfaceName(_settings);
+        var expectedInterface = _settings.AllowedVpnInterfaces.Count > 0
+            ? string.Join("; ", _settings.AllowedVpnInterfaces)
+            : GetExpectedInterfaceName(_settings);
         ExpectedInterfaceText.Text = _settings.RouteMode == VpnRouteMode.NoSeparateAdapter
             ? "Не используется — режим без отдельного адаптера"
             : string.IsNullOrWhiteSpace(expectedInterface)
@@ -2111,17 +2147,17 @@ public partial class MainWindow : Window
     /// </summary>
     private void UpdateRouteCheckContext(AdapterInventoryResult inventory)
     {
-        var expected = ExpectedInterface.FromSettings(_settings);
+        var expected = ExpectedInterface.AllFromSettings(_settings);
         var live = RouteCheckContext.FromAdapters(inventory.Adapters);
 
-        if (expected.IsEmpty)
+        if (expected.Count == 0)
         {
             _adapterPresence.Reset();
             _routeCheckContext = live;
             return;
         }
 
-        var present = live.Contains(expected);
+        var present = expected.Any(live.Contains);
         _adapterPresence.Observe(present);
 
         _routeCheckContext = present || _adapterPresence.ConfirmedAbsent
