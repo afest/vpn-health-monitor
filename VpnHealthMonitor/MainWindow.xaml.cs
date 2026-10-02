@@ -40,11 +40,15 @@ public partial class MainWindow : Window
     private readonly AutostartService _autostartService = new();
     private readonly QuietStartGate _quietStart = new();
     private readonly RollingHealthWindow _rollingWindow = new(20);
+    private readonly ConnectivityFailureFilter _failureFilter = new();
     private readonly ObservableCollection<MonitorEvent> _events = new();
     private readonly ObservableCollection<ProtectedAppRow> _protectedAppRows = new();
     private readonly SemaphoreSlim _checkLock = new(1, 1);
     private readonly Dictionary<TrayIconKind, Drawing.Icon> _trayIcons = new();
     private readonly Dictionary<string, bool> _lastKnownExists = new(StringComparer.OrdinalIgnoreCase);
+    // Правила старых версий на экране: старый путь → (путь новой версии, занята ли старая). Таймер
+    // сверяет, чтобы строка сменилась на «не нужна» сама, когда VS Code перезапустят.
+    private readonly Dictionary<string, (string NewerPath, bool InUse)> _previousVersionInUse = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _protectedAppsTimer = new() { Interval = TimeSpan.FromSeconds(15) };
     private bool _protectedAppsRefreshInFlight;
     private bool _protectedAppsWatchErrorShown;
@@ -76,6 +80,7 @@ public partial class MainWindow : Window
     private Forms.NotifyIcon? _trayIcon;
     private NetworkSnapshot? _lastSnapshot;
     private MonitorStatus _currentStatus = MonitorStatus.Unknown;
+    private string _currentStatusDescription = string.Empty;
     private string? _lastIp;
     private string? _lastConfirmedVpnInterface;
     private DateTimeOffset? _lastSuccessfulCheckAt;
@@ -1056,15 +1061,40 @@ public partial class MainWindow : Window
             var checkToken = checkCts.Token;
 
             var snapshot = await _networkCheckService.RunAsync(_settings, checkToken);
-            _lastSnapshot = snapshot;
             _lastCompletedCheckAt = DateTimeOffset.Now;
-            _rollingWindow.Add(snapshot);
 
             await MaybeRefreshAdapterInventoryAsync();
 
+            // Провал связи определяется по самому замеру и настройкам, скользящее окно в нём не
+            // участвует, поэтому классифицировать можно до того, как замер попал в окно (T-473).
             var result = HealthEvaluator.Evaluate(snapshot, _rollingWindow, _settings, _routeCheckContext);
-            await HandleResultAsync(trigger, snapshot, result, cancellationToken);
-            UpdateDashboard(snapshot, result);
+            var failure = _failureFilter.Observe(
+                result,
+                snapshot,
+                _settings,
+                _lastIp,
+                manual: string.Equals(trigger, "manual-check", StringComparison.OrdinalIgnoreCase));
+
+            if (failure.Action == FailureFilterAction.Hold)
+            {
+                await NoteHeldFailureAsync(snapshot, result, cancellationToken);
+            }
+            else
+            {
+                // Придержанный замер в окно не попадает: иначе одиночный сбой со 100% потерь ещё
+                // две минуты держит «СЕТЬ ПРОСЕЛА» — вторая ложная тревога от той же секунды.
+                _lastSnapshot = snapshot;
+                _rollingWindow.Add(snapshot);
+                result = HealthEvaluator.Evaluate(snapshot, _rollingWindow, _settings, _routeCheckContext);
+
+                if (failure.Reason == FailureConfirmation.Repeated)
+                {
+                    result = WithRepeatNote(result, failure.FailuresInWindow);
+                }
+
+                await HandleResultAsync(trigger, snapshot, result, cancellationToken);
+                UpdateDashboard(snapshot, result);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1116,6 +1146,33 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Неподтверждённый сбой (T-473): вердикт, трей и детали остаются от последнего засчитанного
+    /// замера, но молча сбой не проглатывается. В шапке — пометка, в файле журнала — строка для
+    /// разбора сети. В список событий и в уведомления он не идёт.
+    /// </summary>
+    private async Task NoteHeldFailureAsync(NetworkSnapshot snapshot, HealthResult result, CancellationToken cancellationToken)
+    {
+        StatusDescriptionText.Text = _currentStatus == MonitorStatus.Unknown
+            ? "Первая проверка не прошла — перепроверяю на следующем цикле."
+            : $"{_currentStatusDescription} Последняя проверка не прошла — перепроверяю на следующем цикле.";
+
+        var record = CreateEvent(
+            $"одиночный сбой проверки, не засчитан ({result.Status.ToDisplayText()}): {result.Description}",
+            _currentStatus,
+            snapshot);
+        await _logService.WriteEventAsync(record, _settings, cancellationToken);
+    }
+
+    private static HealthResult WithRepeatNote(HealthResult result, int failuresInWindow) => new()
+    {
+        Status = result.Status,
+        Description = $"{result.Description} Сбой повторяется: неудачных проверок за "
+            + $"{ConnectivityFailureFilter.RepeatWindow.TotalMinutes:0} мин — {failuresInWindow}.",
+        RouteCheck = result.RouteCheck,
+        ExitCheck = result.ExitCheck
+    };
+
     private async Task HandleResultAsync(
         string trigger,
         NetworkSnapshot snapshot,
@@ -1124,7 +1181,10 @@ public partial class MainWindow : Window
     {
         var previousStatus = _currentStatus;
         var previousIp = _lastIp;
-        var internetAvailable = snapshot.HttpAvailable || snapshot.PingSuccesses > 0;
+        var internetResponds = snapshot.HttpAvailable || snapshot.PingSuccesses > 0;
+        var internetAvailable = _internetWasAvailable == false
+            ? internetResponds
+            : !_failureFilter.IsInternetLossConfirmed(snapshot, result.Status);
         var currentVpnInterface = (result.Status is MonitorStatus.Ok or MonitorStatus.Degraded)
             && HealthEvaluator.IsTrustedKnownVpnExit(snapshot, _settings, result.RouteCheck)
             ? snapshot.InterfaceName
@@ -1476,6 +1536,7 @@ public partial class MainWindow : Window
     private void ResetSessionStats()
     {
         _rollingWindow.Clear();
+        _failureFilter.Reset();
         _lastSuccessfulCheckAt = null;
         _lastIpChangeAt = null;
         _lastConfirmedVpnInterface = null;
@@ -1648,6 +1709,7 @@ public partial class MainWindow : Window
     {
         StatusText.Text = status.ToDisplayText();
         StatusDescriptionText.Text = description;
+        _currentStatusDescription = description;
         StatusBanner.Background = status switch
         {
             MonitorStatus.Ok => new SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 132, 75)),
@@ -2407,7 +2469,9 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var result = await _firewallService.UpdatePathAsync(pending, oldRuleName, adapters, CancellationToken.None);
+            var idlePreviousVersions = await CollectIdlePreviousVersionRulesAsync();
+            var result = await _firewallService.UpdatePathAsync(
+                pending, oldRuleName, adapters, CancellationToken.None, idlePreviousVersions);
 
             if (result.Cancelled)
             {
@@ -2438,7 +2502,16 @@ public partial class MainWindow : Window
             await _settingsService.SaveAsync(_settings);
             await LogKillSwitchEventAsync("path_updated",
                 $"путь обновлён, новое правило применено, старое сохранено при наличии файла: {app.Name} ({oldPath} → {newPath})", app);
-            FooterText.Text = $"Путь «{app.Name}» обновлён. Старое правило сохраняется, пока прежний файл существует.";
+
+            var cleaned = result.Items.Where(item => item.State == "stale_removed").ToList();
+            foreach (var item in cleaned)
+            {
+                await LogKillSwitchEventAsync("rule_removed",
+                    $"вместе с обновлением пути снято ненужное правило старой версии: {item.Path}");
+            }
+
+            FooterText.Text = $"Путь «{app.Name}» обновлён. Старое правило сохраняется, пока прежняя версия может работать."
+                + (cleaned.Count > 0 ? $" Сняты ненужные правила старых версий: {cleaned.Count}." : string.Empty);
             await RefreshProtectedAppsAsync(logIssues: false);
         }
         catch (Exception ex)
@@ -2449,6 +2522,24 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Правила прошлых версий, которые сейчас никому не нужны. Уходят в тот же UAC, что и обновление
+    /// пути (T-482): копиться они перестают, а отдельного запроса прав нет.
+    /// </summary>
+    private async Task<IReadOnlyList<FirewallRuleInfo>> CollectIdlePreviousVersionRulesAsync()
+    {
+        var rules = await _firewallService.QueryRulesAsync(CancellationToken.None);
+        if (rules is null)
+        {
+            return Array.Empty<FirewallRuleInfo>();
+        }
+
+        return FirewallService.FindUntrackedRules(rules, _settings.ProtectedApps)
+            .Where(rule => FirewallService.FindNewerTrackedVersion(rule, _settings.ProtectedApps) is { } newer
+                && !PreviousVersionUsage.Check(rule.Program!, newer.Path).InUse)
+            .ToList();
+    }
+
     private async void RemoveApp_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as System.Windows.Controls.Button)?.DataContext is not ProtectedAppRow row)
@@ -2457,8 +2548,30 @@ public partial class MainWindow : Window
         }
 
         var app = row.App;
+
+        // Правило старой версии: строка могла устареть с прошлого обновления списка, поэтому
+        // проверяем ещё раз в момент нажатия. Снять правило у работающего процесса — выпустить его мимо VPN.
+        if (row.IsPreviousVersion)
+        {
+            var usage = PreviousVersionUsage.Check(app.Path, row.NewerVersionPath);
+            if (usage.InUse)
+            {
+                var why = usage.RunningFromOldExe > 0
+                    ? $"Из старой версии «{app.Name}» сейчас запущено процессов: {usage.RunningFromOldExe}. Правило не пускает их мимо VPN."
+                    : "VS Code запущен раньше, чем скачалась новая версия расширения: какое-то его окно может работать на старой "
+                      + "и запустить её снова уже без правила.";
+                System.Windows.MessageBox.Show(this,
+                    why + " Снимать рано: закрой все окна программы (для расширений — VS Code) и открой снова, тогда строка станет «не нужна».",
+                    "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Information);
+                await RefreshProtectedAppsAsync(logIssues: false);
+                return;
+            }
+        }
+
         var confirm = System.Windows.MessageBox.Show(this,
-            $"Удалить «{app.Name}» из защиты и снять её firewall-правило?",
+            row.IsPreviousVersion
+                ? $"Снять правило старой версии «{app.Name}»? Новая версия останется защищённой своей строкой."
+                : $"Удалить «{app.Name}» из защиты и снять её firewall-правило?",
             "VPN Health Monitor", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes)
         {
@@ -2471,6 +2584,24 @@ public partial class MainWindow : Window
         {
             await LogKillSwitchEventAsync("uac_cancelled", $"снятие правила отменено в UAC: {app.Name}", app);
             FooterText.Text = "Операция отменена в UAC. Программа осталась в списке.";
+            return;
+        }
+
+        if (!result.Success)
+        {
+            await LogKillSwitchEventAsync("admin_error", $"ошибка снятия правила: {result.Error}", app);
+            System.Windows.MessageBox.Show(this,
+                result.Error ?? "Не удалось снять правило.",
+                "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+            await RefreshProtectedAppsAsync(logIssues: false);
+            return;
+        }
+
+        if (row.IsPreviousVersion)
+        {
+            // В списке старой версии нет: запись новой версии трогать нельзя, хотя ключ у них общий.
+            await LogKillSwitchEventAsync("rule_removed", $"снято правило старой версии: {app.Name} ({app.Path})", app);
+            await RefreshProtectedAppsAsync(logIssues: false);
             return;
         }
 
@@ -2701,6 +2832,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void AddUntrackedRuleRows(IReadOnlyList<FirewallRuleInfo>? rules)
     {
+        _previousVersionInUse.Clear();
         if (rules is null)
         {
             return;
@@ -2712,6 +2844,37 @@ public partial class MainWindow : Window
             var name = string.IsNullOrWhiteSpace(path)
                 ? rule.Rule
                 : ProtectedAppNaming.RefreshIfPossible(path, SafeFileName(path));
+
+            // Правило прошлой версии программы из списка (T-473): «Взять под наблюдение» к нему не
+            // применимо, а снимать его можно только когда из старой версии ничего не запущено.
+            if (FirewallService.FindNewerTrackedVersion(rule, _settings.ProtectedApps) is { } newer)
+            {
+                var inUse = PreviousVersionUsage.Check(path, newer.Path).InUse;
+                _previousVersionInUse[path] = (newer.Path, inUse);
+                var status = inUse ? ProtectionStatus.PreviousVersionInUse : ProtectionStatus.PreviousVersionIdle;
+
+                _protectedAppRows.Add(new ProtectedAppRow
+                {
+                    App = new ProtectedApp
+                    {
+                        Name = name,
+                        Path = path,
+                        RuleName = rule.Rule,
+                        IdentityKey = ProtectedAppIdentity.ComputeKey(path)
+                    },
+                    Name = name,
+                    Path = path,
+                    Status = status,
+                    StatusText = status.ToDisplayText(),
+                    AppliedText = "—",
+                    CanUpdatePath = false,
+                    CanAdopt = false,
+                    CanReinstall = false,
+                    CanRemove = !inUse,
+                    NewerVersionPath = newer.Path
+                });
+                continue;
+            }
 
             _protectedAppRows.Add(new ProtectedAppRow
             {
@@ -2762,8 +2925,31 @@ public partial class MainWindow : Window
             RulesAppliedAt = DateTimeOffset.Now
         };
 
+        // В списке одна запись на программу: вторая с тем же ключом склеится с первой при сохранении,
+        // и кнопка молча ничего не сделает (T-473). Говорим об этом, а не пишем «добавлена».
+        var key = ProtectedAppIdentity.KeyOf(app);
+        var existing = _settings.ProtectedApps.FirstOrDefault(a =>
+            string.Equals(ProtectedAppIdentity.KeyOf(a), key, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            System.Windows.MessageBox.Show(this,
+                $"«{existing.Name}» уже в списке защищённых — с путём {existing.Path}. Это правило другой версии той же "
+                + "программы, отдельной строкой его не взять. Если оно больше не нужно, сними его кнопкой «Удалить».",
+                "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Information);
+            await RefreshProtectedAppsAsync(logIssues: false);
+            return;
+        }
+
         _settings.ProtectedApps.Add(app);
         await _settingsService.SaveAsync(_settings);
+
+        if (!_settings.ProtectedApps.Any(a => string.Equals(a.RuleName, app.RuleName, StringComparison.OrdinalIgnoreCase)))
+        {
+            FooterText.Text = $"«{app.Name}» не удалось добавить в список: запись слилась с уже существующей.";
+            await RefreshProtectedAppsAsync(logIssues: false);
+            return;
+        }
+
         await LogKillSwitchEventAsync("rule_adopted",
             $"правило взято под наблюдение: {app.Name} ({app.RuleName})", app);
         FooterText.Text = $"«{app.Name}» добавлена в список — правило уже действовало, UAC не потребовался.";
@@ -2822,6 +3008,15 @@ public partial class MainWindow : Window
             else if (!_lastKnownExists.ContainsKey(key))
             {
                 _lastKnownExists[key] = exists;
+            }
+        }
+
+        foreach (var (path, state) in _previousVersionInUse)
+        {
+            if (PreviousVersionUsage.Check(path, state.NewerPath).InUse != state.InUse)
+            {
+                changed = true;
+                break;
             }
         }
 

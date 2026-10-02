@@ -865,6 +865,9 @@
                                             <DataTrigger Binding="{Binding Status}" Value="Untracked">
                                                 <Setter Property="Background" Value="#FFF4DC" />
                                             </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="PreviousVersionIdle">
+                                                <Setter Property="Background" Value="#FFF4DC" />
+                                            </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </ListView.ItemContainerStyle>
@@ -893,6 +896,12 @@
                                                                         <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
                                                                     </DataTrigger>
                                                                     <DataTrigger Binding="{Binding Status}" Value="Untracked">
+                                                                        <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="PreviousVersionInUse">
+                                                                        <Setter Property="Foreground" Value="{StaticResource OkBrush}" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="PreviousVersionIdle">
                                                                         <Setter Property="Foreground" Value="{StaticResource WarnBrush}" />
                                                                     </DataTrigger>
                                                                 </Style.Triggers>
@@ -928,7 +937,13 @@
                                                                 Visibility="{Binding CanReinstall, Converter={StaticResource BoolToVis}}"
                                                                 Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
                                                         <Button Content="Удалить" Click="RemoveApp_Click"
+                                                                Visibility="{Binding CanRemove, Converter={StaticResource BoolToVis}}"
                                                                 Margin="0" Padding="10,3" MinHeight="26" />
+                                                        <TextBlock Text="снять — после перезапуска программы"
+                                                                   Visibility="{Binding IsPreviousVersionInUse, Converter={StaticResource BoolToVis}}"
+                                                                   Foreground="{StaticResource MutedBrush}"
+                                                                   ToolTip="{Binding StatusHint}"
+                                                                   VerticalAlignment="Center" Margin="0,4" />
                                                     </WrapPanel>
                                                 </DataTemplate>
                                             </GridViewColumn.CellTemplate>

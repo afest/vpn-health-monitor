@@ -168,6 +168,27 @@ public sealed class FirewallService
     }
 
     /// <summary>
+    /// Программа из списка, прошлой версии которой принадлежит правило вне списка, — или null.
+    ///
+    /// Обновление расширения VS Code, CLI или MSIX ставит правило на новый путь, а старое оставляет,
+    /// пока старый .exe может работать. Такое правило выглядит «вне списка», но взять его под
+    /// наблюдение нельзя: в списке одна запись на программу, и вторая с тем же ключом склеится с первой
+    /// при сохранении. Поэтому его надо узнать и показать как старую версию.
+    /// </summary>
+    public static ProtectedApp? FindNewerTrackedVersion(FirewallRuleInfo rule, IReadOnlyList<ProtectedApp> apps)
+    {
+        if (string.IsNullOrWhiteSpace(rule.Program))
+        {
+            return null;
+        }
+
+        var key = ProtectedAppIdentity.ComputeKey(rule.Program);
+        return apps.FirstOrDefault(app =>
+            string.Equals(ProtectedAppIdentity.KeyOf(app), key, StringComparison.OrdinalIgnoreCase)
+            && !PathsMatch(rule.Program, app.Path));
+    }
+
+    /// <summary>
     /// Fallback status when firewall rules cannot be read (access denied to non-elevated caller).
     /// Based on the locally recorded apply state, which is only set after a confirmed elevated apply.
     /// </summary>
@@ -201,17 +222,29 @@ public sealed class FirewallService
     /// the old rule while its executable still exists because an old sidecar may still be running.
     /// <paramref name="appWithNewPath"/> already carries the new Path/RuleName.
     /// </summary>
+    /// <param name="idlePreviousVersionRules">
+    /// Правила прошлых версий, которые приложение признало ненужными (<see cref="PreviousVersionUsage"/>).
+    /// Снимаются в том же UAC, что и обновление пути, — отдельного запроса прав не будет. Скрипт перед
+    /// удалением сам сверяет путь правила и процессы: что-то запустилось из старого .exe — правило остаётся.
+    /// </param>
     public Task<FirewallActionResult> UpdatePathAsync(
         ProtectedApp appWithNewPath,
         string oldRuleName,
         IReadOnlyList<string> blockedAdapters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<FirewallRuleInfo>? idlePreviousVersionRules = null)
     {
         var job = new
         {
             action = "update_path",
             adapters = blockedAdapters.ToArray(),
-            apps = new[] { new JobApp(appWithNewPath.Name, appWithNewPath.Path, appWithNewPath.RuleName, oldRuleName, true) }
+            apps = new[] { new JobApp(appWithNewPath.Name, appWithNewPath.Path, appWithNewPath.RuleName, oldRuleName, true) },
+            staleRules = (idlePreviousVersionRules ?? Array.Empty<FirewallRuleInfo>())
+                .Where(rule => !string.IsNullOrWhiteSpace(rule.Program)
+                    && !string.Equals(rule.Rule, oldRuleName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(rule.Rule, appWithNewPath.RuleName, StringComparison.OrdinalIgnoreCase))
+                .Select(rule => new StaleRule(rule.Rule, rule.Program!))
+                .ToArray()
         };
         return ExecuteJobAsync(job, cancellationToken);
     }
@@ -266,6 +299,8 @@ public sealed class FirewallService
     }
 
     private sealed record JobApp(string Name, string Path, string RuleName, string? OldRuleName, bool SweepDeadOrphans);
+
+    private sealed record StaleRule(string RuleName, string Program);
 
     private static FirewallActionResult ReadResult(string resultFile, int exitCode)
     {
@@ -416,7 +451,7 @@ public sealed class FirewallService
         };
     }
 
-    private const string HelperScript = @"param([Parameter(Mandatory=$true)][string]$JobFile)
+    internal const string HelperScript = @"param([Parameter(Mandatory=$true)][string]$JobFile)
 $ErrorActionPreference = 'Stop'
 $resultFile = $JobFile + '.result.json'
 $logFile = $JobFile + '.log'
@@ -480,6 +515,30 @@ try {
             $result.ok = $false
         }
         $result.items += $item
+      }
+
+      # Previous-version rules the app found unused (T-482). Only after the new rule is in place,
+      # and only if nothing runs from that exe right now: a running old sidecar must stay blocked.
+      if ($result.ok -and $job.staleRules) {
+        $running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath } | ForEach-Object { ([string]$_.ExecutablePath).ToLowerInvariant() })
+        foreach ($stale in @($job.staleRules)) {
+          $item = [ordered]@{ ruleName = [string]$stale.ruleName; path = [string]$stale.program; state = 'stale_kept' }
+          try {
+            $target = ([string]$stale.program).ToLowerInvariant()
+            if ($target -and ($running -notcontains $target)) {
+              Get-NetFirewallRule -DisplayName 'VPN Health Monitor - *' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $stale.ruleName } | ForEach-Object {
+                $prog = [string](($_ | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program)
+                if ($prog -and ($prog.ToLowerInvariant() -eq $target)) {
+                  $_ | Remove-NetFirewallRule -ErrorAction Stop
+                  $item.state = 'stale_removed'
+                }
+              }
+            }
+          } catch {
+            $item.state = 'stale_error'
+          }
+          $result.items += $item
+        }
       }
     }
     elseif ($job.apps) {

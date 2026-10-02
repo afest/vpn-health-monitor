@@ -33,4 +33,17 @@ public sealed class ProtectedAppRow
 
     /// <summary>False for untracked rows: there is no stored entry to re-apply rules for.</summary>
     public bool CanReinstall { get; init; } = true;
+
+    /// <summary>
+    /// False для правила старой версии, из которой ещё запущены процессы: снять его — выпустить
+    /// их мимо VPN. Кнопка появится сама, когда старые процессы закроются.
+    /// </summary>
+    public bool CanRemove { get; init; } = true;
+
+    /// <summary>Для строки старой версии — путь версии из списка, которая её сменила.</summary>
+    public string? NewerVersionPath { get; init; }
+
+    public bool IsPreviousVersion => Status is ProtectionStatus.PreviousVersionInUse or ProtectionStatus.PreviousVersionIdle;
+
+    public bool IsPreviousVersionInUse => Status == ProtectionStatus.PreviousVersionInUse;
 }

@@ -95,9 +95,7 @@ public static class HealthEvaluator
             && !string.IsNullOrWhiteSpace(snapshot.ExternalIPv6);
         var expectedInterfaces = ExpectedInterface.AllFromSettings(settings);
         var expectedInterfaceName = GetExpectedInterfaceName(settings);
-        var defaultRouteMismatch = routeCheck == RouteCheckState.Active
-            && expectedInterfaces.Count > 0
-            && !expectedInterfaces.Any(expected => ExpectedInterface.MatchesDisplay(expected, snapshot.InterfaceName));
+        var defaultRouteMismatch = DefaultRouteLeftExpectedVpn(snapshot, settings, routeCheck);
 
         // Наблюдаемый факт: трафик наружу идёт через тот самый VPN-адаптер, который ждали. Считается
         // независимо от RouteMode — настройка описывает намерение, а этот флаг описывает состояние.
@@ -290,6 +288,24 @@ public static class HealthEvaluator
 
         return !settings.AllowedProviders.Any(allowed =>
             ProviderMatcher.IsSameProvider(allowed.Asn, allowed.Name, snapshot.Asn, snapshot.Provider));
+    }
+
+    /// <summary>
+    /// The route check guards a configured adapter, and the default route is no longer on any of them.
+    /// Shared with <see cref="ConnectivityFailureFilter"/>: a failed check that also shows this must
+    /// never wait for confirmation, because leaving the tunnel is the event the monitor exists for.
+    /// </summary>
+    public static bool DefaultRouteLeftExpectedVpn(
+        NetworkSnapshot snapshot, AppSettings settings, RouteCheckState routeCheck)
+    {
+        if (routeCheck != RouteCheckState.Active)
+        {
+            return false;
+        }
+
+        var expectedInterfaces = ExpectedInterface.AllFromSettings(settings);
+        return expectedInterfaces.Count > 0
+            && !expectedInterfaces.Any(expected => ExpectedInterface.MatchesDisplay(expected, snapshot.InterfaceName));
     }
 
     /// <summary>Only an exit confirmed by the configured adapter, country and ASN may rotate its IP.</summary>

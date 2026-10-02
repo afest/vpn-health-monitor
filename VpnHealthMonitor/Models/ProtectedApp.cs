@@ -55,6 +55,16 @@ public enum ProtectionStatus
     /// </summary>
     Untracked,
 
+    /// <summary>
+    /// Правило прошлой версии программы из списка, и из этой версии ещё запущены процессы. VS Code
+    /// держит старый процесс расширения до перезапуска окна: снять правило сейчас — выпустить его
+    /// мимо VPN. Взять под наблюдение такое правило нельзя: в списке одна запись на программу.
+    /// </summary>
+    PreviousVersionInUse,
+
+    /// <summary>Правило прошлой версии, из которой ничего не запущено: новая уже защищена, это можно снять.</summary>
+    PreviousVersionIdle,
+
     /// <summary>Could not determine status (query failed / inconsistent rule).</summary>
     Error
 }
@@ -68,6 +78,8 @@ public static class ProtectionStatusText
         ProtectionStatus.FileNotFound => "Файл не найден",
         ProtectionStatus.PathChanged => "Путь устарел",
         ProtectionStatus.Untracked => "Правило вне списка",
+        ProtectionStatus.PreviousVersionInUse => "Старая версия, работает",
+        ProtectionStatus.PreviousVersionIdle => "Старая версия, не нужна",
         _ => "Ошибка"
     };
 
@@ -82,6 +94,8 @@ public static class ProtectionStatusText
         ProtectionStatus.FileNotFound => "?",
         ProtectionStatus.PathChanged => "▲",      // треугольник
         ProtectionStatus.Untracked => "◆",        // ромб
+        ProtectionStatus.PreviousVersionInUse => "◐", // полукруг
+        ProtectionStatus.PreviousVersionIdle => "◇",  // пустой ромб
         _ => "✕"                                  // крест
     };
 
@@ -92,6 +106,8 @@ public static class ProtectionStatusText
         ProtectionStatus.FileNotFound => "Файла по сохранённому пути нет: программа удалена или переустановлена в другое место.",
         ProtectionStatus.PathChanged => "Найдена новая версия программы: правило ещё не закрывает её прямой выход. Нажми «Обновить путь».",
         ProtectionStatus.Untracked => "Правило в Windows есть и работает, но программы нет в списке защищённых — приложение не следит за её состоянием. Нажми «Взять под наблюдение».",
+        ProtectionStatus.PreviousVersionInUse => "Правило прошлой версии той же программы. Она ещё может работать: из неё запущены процессы или VS Code не перезапускался целиком после обновления расширения. Правило не пускает её мимо VPN. Новая версия защищена своей строкой. Закрой все окна программы и открой снова — тогда правило можно будет снять.",
+        ProtectionStatus.PreviousVersionIdle => "Правило прошлой версии той же программы, она больше не используется. Новая версия защищена своей строкой. Можно снять кнопкой «Удалить» или оставить: правило снимется само при следующем «Обновить путь».",
         _ => "Статус не определён: правило не соответствует ожидаемому или запрос к firewall не прошёл."
     };
 }
