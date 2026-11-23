@@ -1,8 +1,50 @@
+using System.ComponentModel;
+
 namespace VpnHealthMonitor.Models;
 
-/// <summary>Display row for the "Защищённые приложения" list (rebuilt on each status refresh).</summary>
-public sealed class ProtectedAppRow
+/// <summary>Действие над строкой, которое сейчас выполняется: на его кнопке крутится индикатор.</summary>
+public static class RowAction
 {
+    public const string Reinstall = "reinstall";
+    public const string UpdatePath = "update_path";
+    public const string Remove = "remove";
+}
+
+/// <summary>Display row for the "Защищённые приложения" list (rebuilt on each status refresh).</summary>
+public sealed class ProtectedAppRow : INotifyPropertyChanged
+{
+    private string? _workingAction;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// Что сейчас делается с этой строкой (<see cref="RowAction"/>), null — ничего. Меняется на лету,
+    /// поэтому с уведомлением: индикатор на кнопке включается в момент нажатия, без перерисовки списка.
+    /// </summary>
+    public string? WorkingAction
+    {
+        get => _workingAction;
+        set
+        {
+            if (_workingAction == value)
+            {
+                return;
+            }
+
+            _workingAction = value;
+            foreach (var name in new[] { nameof(WorkingAction), nameof(IsReinstalling), nameof(IsUpdatingPath), nameof(IsRemoving) })
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+            }
+        }
+    }
+
+    public bool IsReinstalling => _workingAction == RowAction.Reinstall;
+
+    public bool IsUpdatingPath => _workingAction == RowAction.UpdatePath;
+
+    public bool IsRemoving => _workingAction == RowAction.Remove;
+
     public ProtectedApp App { get; init; } = new();
 
     public string Name { get; init; } = string.Empty;

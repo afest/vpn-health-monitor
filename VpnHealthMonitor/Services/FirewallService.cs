@@ -31,6 +31,9 @@ public sealed class FirewallService
 {
     public const string RulePrefix = "VPN Health Monitor - ";
 
+    /// <summary>UAC подтверждён, helper с правами запущен. Приходит не в UI-потоке.</summary>
+    public event EventHandler? ElevatedHelperStarted;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
@@ -276,11 +279,15 @@ public sealed class FirewallService
         int exitCode;
         try
         {
+            // Process.Start с runas возвращается только после ответа в окне UAC: дальше права получены
+            // и идёт сама работа с правилами — интерфейс меняет «жду UAC» на «применяю».
             using var process = Process.Start(psi);
             if (process is null)
             {
                 return FirewallActionResult.Failed("Не удалось запустить процесс с повышением прав.");
             }
+
+            ElevatedHelperStarted?.Invoke(this, EventArgs.Empty);
 
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
             try { exitCode = process.ExitCode; } catch { exitCode = -1; }

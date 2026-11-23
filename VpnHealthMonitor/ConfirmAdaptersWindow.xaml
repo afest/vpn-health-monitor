@@ -50,7 +50,7 @@
             <Border Background="#FFF6E6" BorderBrush="#E0C580" BorderThickness="1" CornerRadius="4" Padding="8" Margin="0,8,0,0">
                 <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#5B4A20">
                     <Run FontWeight="SemiBold" Text="Если после применения интернет пропадёт." />
-                    <Run Text="Кнопка «Отключить защиту» на вкладке «Защищённые приложения» снимает все правила. Если приложение не открывается — запусти" />
+                    <Run Text="Кнопка «Отключить защиту» на вкладке «Приложения» снимает все правила. Если приложение не открывается — запусти" />
                     <Run FontFamily="Consolas" Text="tools\remove-protection.bat" />
                     <Run Text="из папки приложения: он сам попросит права администратора и снимет правила." />
                 </TextBlock>

@@ -53,6 +53,30 @@ public partial class MainWindow : Window
     private bool _protectedAppsRefreshInFlight;
     private bool _protectedAppsWatchErrorShown;
     private HashSet<string> _notifiedPathChange = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _notifiedRuleLost = new(StringComparer.OrdinalIgnoreCase);
+
+    // Операция с правилами в работе (индикатор, заблокированные действия). Счётчик, а не флаг:
+    // операции вкладываются — применение правил внутри себя перечитывает статус.
+    private int _protectionBusyDepth;
+    private readonly ProtectionUiState _protectionUi = new();
+
+    // Строки, по которым идёт операция, и какая: индикатор на нажатой кнопке. Ключ — объект программы
+    // по ссылке: у программ из списка он переживает перерисовку списка и даже смену пути.
+    private readonly Dictionary<ProtectedApp, string> _workingRows = new(ReferenceEqualityComparer.Instance);
+    private ProtectionSummary _protectionSummary = ProtectionSummary.Empty;
+    private bool _protectionVerifiedLive;
+    private MonitorStatus _bannerStatus = MonitorStatus.Unknown;
+
+    // Автовосстановление: что слетело и ждёт своей очереди, и по чему попытка уже была. Попытка
+    // помечается до UAC: отказ в окне Windows не должен возвращаться каждые 15 секунд. Отметка
+    // снимается, когда защита восстановилась, — следующий слёт той же программы снова чинится сам.
+    private readonly List<(ProtectedAppRow Row, AutoRepairKind Kind)> _pendingAutoRepair = new();
+    private readonly HashSet<string> _autoRepairAttempted = new(StringComparer.OrdinalIgnoreCase);
+    private bool _autoRepairScheduled;
+
+    // Пропавшее правило по путям программ не заметить: таймер раз в минуту сверяет живой фаервол.
+    private int _protectedAppsTickCount;
+    private const int LiveRuleCheckEveryTicks = 4;
     private AdapterInventoryResult? _adapterInventoryResult;
     private RouteCheckContext _routeCheckContext = RouteCheckContext.Unknown;
     private readonly AdapterPresenceTracker _adapterPresence = new();
@@ -102,9 +126,18 @@ public partial class MainWindow : Window
         InitializeComponent();
         EventsList.ItemsSource = _events;
         ProtectedAppsList.ItemsSource = _protectedAppRows;
+        // Кнопки строк читают отсюда, идёт ли операция с правилами (привязка к предку ListView).
+        ProtectedAppsList.DataContext = _protectionUi;
         ApplyEventsViewMode(detailed: false);
         InitializeTrayIcon();
         _protectedAppsTimer.Tick += ProtectedAppsTimer_Tick;
+        _firewallService.ElevatedHelperStarted += (_, _) => Dispatcher.BeginInvoke(() =>
+        {
+            if (IsProtectionBusy)
+            {
+                SetProtectionBusyText("Права получены — меняю правила фаервола...");
+            }
+        });
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -113,7 +146,11 @@ public partial class MainWindow : Window
         UpdateStatusBanner(MonitorStatus.Unknown, "Готово. Запусти проверку или включи мониторинг.");
         UpdateDashboard(null, null);
         UpdateAdminStatus();
-        await RefreshProtectedAppsAsync(logIssues: false);
+        UpdateSectionChrome();
+        using (BeginProtectionBusy("Проверяю правила фаервола..."))
+        {
+            await RefreshProtectedAppsAsync(logIssues: false);
+        }
         await RefreshAdapterChoicesAsync();
         UpdateDashboard(_lastSnapshot, null);
         _uiReady = true;
@@ -724,8 +761,8 @@ public partial class MainWindow : Window
     /// </summary>
     private void ProtectedAppsList_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        // Программа 170 + Статус 175 + Правила применены 140 + Действия 300.
-        var available = ProtectedAppsList.ActualWidth - 785 - 24;
+        // Программа 170 + Статус 175 + Правила применены 140 + Действия 400.
+        var available = ProtectedAppsList.ActualWidth - 885 - 24;
         ProtectedPathColumn.Width = Math.Max(160, available);
     }
 
@@ -824,6 +861,7 @@ public partial class MainWindow : Window
         _settings.EnableWindowsNotifications = WindowsNotificationsCheckBox.IsChecked == true;
         _settings.NotifyCountryChanged = NotifyCountryChangedCheckBox.IsChecked == true;
         _settings.NotifyIpChanged = NotifyIpChangedCheckBox.IsChecked == true;
+        _settings.AutoRepairProtection = AutoRepairProtectionCheckBox.IsChecked == true;
         _settings.MinimizeToTrayOnClose = MinimizeToTrayCheckBox.IsChecked == true;
         _settings.LaunchWithWindows = LaunchWithWindowsCheckBox.IsChecked == true;
         _settings.StartMonitoringOnLaunch = StartMonitoringOnLaunchCheckBox.IsChecked == true;
@@ -864,6 +902,7 @@ public partial class MainWindow : Window
         WindowsNotificationsCheckBox.IsChecked = _settings.EnableWindowsNotifications;
         NotifyCountryChangedCheckBox.IsChecked = _settings.NotifyCountryChanged;
         NotifyIpChangedCheckBox.IsChecked = _settings.NotifyIpChanged;
+        AutoRepairProtectionCheckBox.IsChecked = _settings.AutoRepairProtection;
         MinimizeToTrayCheckBox.IsChecked = _settings.MinimizeToTrayOnClose;
         // Источник истины для автозапуска — реестр, а не settings.json: приложение могли переставить
         // в другую папку, и запись указывала бы на старый путь. Галка показывает факт системы.
@@ -1710,6 +1749,7 @@ public partial class MainWindow : Window
         StatusText.Text = status.ToDisplayText();
         StatusDescriptionText.Text = description;
         _currentStatusDescription = description;
+        _bannerStatus = status;
         StatusBanner.Background = status switch
         {
             MonitorStatus.Ok => new SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 132, 75)),
@@ -1762,9 +1802,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        _trayIcon.Icon = _trayIcons[GetTrayIconKind(status)];
+        // Программа без защиты — красный флаг наравне с упавшим VPN: VPN может быть в порядке,
+        // а программа уже ходит мимо него. Иконка краснеет, в подсказке — сколько программ.
+        var unprotected = _protectionSummary.Unprotected;
+        _trayIcon.Icon = _trayIcons[unprotected > 0 ? TrayIconKind.Red : GetTrayIconKind(status)];
         var ip = _lastSnapshot?.ExternalIPv4 ?? _lastIp ?? "IPv4 н/д";
-        _trayIcon.Text = TruncateTrayText($"{status.ToDisplayText()} | {ip}");
+        _trayIcon.Text = TruncateTrayText(unprotected > 0
+            ? $"{status.ToDisplayText()} | без защиты: {unprotected} прил."
+            : $"{status.ToDisplayText()} | {ip}");
     }
 
     /// <summary>
@@ -2078,30 +2123,227 @@ public partial class MainWindow : Window
 
     // ----- Per-app kill switch (Защищённые приложения) -----
 
+    /// <summary>
+    /// Права администратора — строкой в пояснении под «?», а не постоянной полосой: это не новость при
+    /// каждом заходе, а пояснение, почему операции просят UAC. С правами строки нет вовсе.
+    /// </summary>
     private void UpdateAdminStatus(bool? canVerifyLive = null)
     {
         var elevated = FirewallService.IsProcessElevated();
-
+        AdminStatusText.Visibility = elevated ? Visibility.Collapsed : Visibility.Visible;
         if (elevated)
         {
-            AdminStatusText.Text = "Права администратора: ДА — правила применяются без отдельного UAC.";
+            return;
         }
-        else if (canVerifyLive == false)
+
+        AdminStatusText.Text = "Приложение запущено без прав администратора. " + (canVerifyLive == false
+            ? "Каждая операция с правилами запросит подтверждение UAC — окно Windows «Разрешить этому приложению вносить изменения?». "
+              + "Читать фаервол без прав не получилось, поэтому статусы показаны по записи приложения: пропажу правила видно только после «Обновить статус» с правами или при применении правил."
+            : "Каждая операция с правилами запросит подтверждение UAC — окно Windows «Разрешить этому приложению вносить изменения?». Права нужны только на изменение: прочитать правила получилось и без них, статусы сверены с фаерволом.");
+    }
+
+    // ----- Индикатор операции с правилами и блок «Приложения» в плашке -----
+
+    private bool IsProtectionBusy => _protectionBusyDepth > 0;
+
+    private sealed class ProtectionBusyScope(Action end) : IDisposable
+    {
+        private Action? _end = end;
+
+        public void Dispose()
         {
-            AdminStatusText.Text = "Права администратора: нет. Чтение firewall без admin недоступно — статусы показаны по записи приложения; сверка с firewall происходит при применении правил (UAC).";
+            _end?.Invoke();
+            _end = null;
+        }
+    }
+
+    /// <summary>
+    /// Показывает, что операция взялась в работу. Индикаторов два: на нажатой кнопке строки
+    /// (<see cref="MarkRowsWorking"/>) и в плашке защиты наверху — там же текущий шаг. Действия
+    /// заблокированы — вторая правка фаервола поверх первой не начнётся.
+    /// </summary>
+    private IDisposable BeginProtectionBusy(string text)
+    {
+        _protectionBusyDepth++;
+        SetProtectionBusyText(text);
+        ApplyProtectionBusyVisuals();
+        return new ProtectionBusyScope(() =>
+        {
+            _protectionBusyDepth = Math.Max(0, _protectionBusyDepth - 1);
+            ApplyProtectionBusyVisuals();
+        });
+    }
+
+    private string _protectionBusyText = string.Empty;
+
+    private void SetProtectionBusyText(string text)
+    {
+        _protectionBusyText = text;
+        if (IsProtectionBusy)
+        {
+            RenderBannerProtection();
+        }
+    }
+
+    private void ApplyProtectionBusyVisuals()
+    {
+        var busy = IsProtectionBusy;
+        // Ссылки остаются на месте и сереют: строка не меняется, список под ней не прыгает.
+        ProtectionActionsPanel.IsEnabled = !busy;
+        // Блокируются кнопки строк, а не список: его можно читать и прокручивать, пока идёт операция.
+        _protectionUi.IsIdle = !busy;
+        RenderBannerProtection();
+    }
+
+    /// <summary>Включает индикатор на кнопке <paramref name="action"/> в строках этих программ до Dispose.</summary>
+    private IDisposable MarkRowsWorking(IEnumerable<ProtectedApp> apps, string action)
+    {
+        var marked = apps.ToList();
+        foreach (var app in marked)
+        {
+            _workingRows[app] = action;
+        }
+
+        SyncRowWorkingState();
+        return new ProtectionBusyScope(() =>
+        {
+            foreach (var app in marked)
+            {
+                _workingRows.Remove(app);
+            }
+
+            SyncRowWorkingState();
+        });
+    }
+
+    private void SyncRowWorkingState()
+    {
+        foreach (var row in _protectedAppRows)
+        {
+            row.WorkingAction = _workingRows.TryGetValue(row.App, out var action) ? action : null;
+        }
+    }
+
+    private void UpdateProtectionSummary(ProtectionSummary summary, bool verifiedLive)
+    {
+        _protectionSummary = summary;
+        _protectionVerifiedLive = verifiedLive;
+        RenderBannerProtection();
+        UpdateTrayIcon(_bannerStatus);
+    }
+
+    private void RenderBannerProtection()
+    {
+        var summary = _protectionSummary;
+        var busy = IsProtectionBusy;
+        // Плашка видна всегда: она же кнопка раздела «Приложения».
+        BannerProtectionSpinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+
+        // Сплошной цвет, как у плашки статуса VPN, и те же оттенки: зелёный — всё защищено, красный —
+        // есть программа без защиты, оранжевый — промежуточное (файл программы не найден), серый —
+        // ещё не проверено. Знак перед числом — второе отличие помимо цвета.
+        string glyph, detail;
+        System.Windows.Media.Color color;
+        if (summary.Total == 0)
+        {
+            color = System.Windows.Media.Color.FromRgb(96, 106, 118);
+            glyph = string.Empty;
+            detail = busy ? "проверяю правила" : "программ под защитой пока нет";
+        }
+        else if (summary.HasUnprotected)
+        {
+            color = System.Windows.Media.Color.FromRgb(180, 67, 45);
+            glyph = "✕";
+            detail = summary.Missing > 0
+                ? $"без защиты: {summary.Unprotected}, файл не найден: {summary.Missing}"
+                : $"под защитой, без защиты: {summary.Unprotected}";
+        }
+        else if (summary.Missing > 0)
+        {
+            color = System.Windows.Media.Color.FromRgb(199, 128, 27);
+            glyph = "?";
+            detail = $"под защитой, файл не найден: {summary.Missing}";
         }
         else
         {
-            AdminStatusText.Text = "Права администратора: нет — каждая операция с правилами запросит UAC.";
+            color = System.Windows.Media.Color.FromRgb(37, 132, 75);
+            glyph = "✓";
+            detail = "приложений под защитой";
         }
 
-        // Строка длинная и обрезается по ширине окна — полный текст остаётся в tooltip'е.
-        AdminStatusText.ToolTip = AdminStatusText.Text;
-        AdminStatusGlyph.Text = elevated ? "✓" : "!";
-        AdminStatusGlyph.Foreground = elevated ? OkBrush : WarnBrush;
-        AdminStatusBorder.Background = elevated
-            ? (System.Windows.Media.Brush)FindResource("SurfaceBrush")
-            : new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xFB, 0xF2));
+        BannerProtectionBlock.Background = new SolidColorBrush(color);
+        BannerProtectionGlyph.Text = glyph;
+        BannerProtectionCount.Text = summary.Total == 0 ? "—" : $"{summary.Protected} ИЗ {summary.Total}";
+        // Пока идёт операция, вместо пояснения — её текущий шаг.
+        BannerProtectionDetail.Text = busy && !string.IsNullOrWhiteSpace(_protectionBusyText) ? _protectionBusyText : detail;
+
+        if (busy)
+        {
+            BannerProtectionBlock.ToolTip = _protectionBusyText;
+        }
+        else
+        {
+            BannerProtectionBlock.ToolTip = summary.HasUnprotected
+                ? "Есть программы без защиты: их прямой выход мимо VPN не закрыт. Нажми, чтобы открыть список."
+                : _protectionVerifiedLive
+                    ? "Все программы из списка защищены — правила сверены с фаерволом. Нажми, чтобы открыть список."
+                    : "Все программы из списка защищены по записи приложения (фаервол без прав не читается). Нажми, чтобы открыть список.";
+        }
+    }
+
+    private void BannerProtectionBlock_Click(object sender, RoutedEventArgs e)
+    {
+        MainTabs.SelectedItem = AppsTab;
+    }
+
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        MainTabs.SelectedItem = SettingsTab;
+    }
+
+    /// <summary>
+    /// Шестерёнка горит, пока открыты настройки: их вкладка без заголовка, и это единственный знак,
+    /// где ты сейчас. SelectionChanged всплывает и от списков внутри вкладок — их пропускаем.
+    /// </summary>
+    private void MainTabs_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, MainTabs))
+        {
+            return;
+        }
+
+        UpdateSectionChrome();
+    }
+
+    /// <summary>
+    /// Плашки «Сводка» и «Приложения» — переключатель разделов: выбранную обводит тёмная рамка
+    /// (цвет самой плашки — всегда состояние, его выбор не трогает). В настройках рамки нет ни у одной.
+    /// </summary>
+    private void UpdateSectionChrome()
+    {
+        if (SummaryPlateRing is null || AppsPlateRing is null)
+        {
+            return;
+        }
+
+        var selected = (System.Windows.Media.Brush)FindResource("InkBrush");
+        SummaryPlateRing.BorderBrush = MainTabs.SelectedItem == SummaryTab ? selected : System.Windows.Media.Brushes.Transparent;
+        AppsPlateRing.BorderBrush = MainTabs.SelectedItem == AppsTab ? selected : System.Windows.Media.Brushes.Transparent;
+    }
+
+    private void SummaryPlate_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        // Кнопки мониторинга внутри плашки обрабатывают клик сами, сюда он от них не доходит.
+        MainTabs.SelectedItem = SummaryTab;
+    }
+
+    /// <summary>«?» раскрывает пояснение раздела «Приложения» — открываем его, если был другой.</summary>
+    private void ProtectionNoteToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Primitives.ToggleButton { IsChecked: true })
+        {
+            MainTabs.SelectedItem = AppsTab;
+        }
     }
 
     private void UpdateRouteCheckText(RouteCheckState state, VpnExitCheckState exitCheck)
@@ -2263,6 +2505,11 @@ public partial class MainWindow : Window
         if (alwaysConfirm || hardwareChanged || names.Count == 0)
         {
             var preselected = hardwareChanged ? null : _settings.ConfirmedBlockedAdapters;
+            if (IsProtectionBusy)
+            {
+                SetProtectionBusyText("Подтверди список адаптеров в открывшемся окне...");
+            }
+
             var dialog = new ConfirmAdaptersWindow(inventory.Adapters, inventory.Warning, preselected) { Owner = this };
             if (dialog.ShowDialog() != true)
             {
@@ -2297,6 +2544,11 @@ public partial class MainWindow : Window
 
     private async void AddAppButton_Click(object sender, RoutedEventArgs e)
     {
+        if (IsProtectionBusy)
+        {
+            return;
+        }
+
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
             Title = "Выбери программу (.exe) для защиты",
@@ -2360,6 +2612,11 @@ public partial class MainWindow : Window
 
     private async void ApplyRulesButton_Click(object sender, RoutedEventArgs e)
     {
+        if (IsProtectionBusy)
+        {
+            return;
+        }
+
         if (_settings.ProtectedApps.Count == 0)
         {
             System.Windows.MessageBox.Show(this, "Список защищённых программ пуст. Сначала добавь программу.",
@@ -2372,7 +2629,7 @@ public partial class MainWindow : Window
 
     private async void DisableProtectionButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_settings.ProtectedApps.Count == 0)
+        if (IsProtectionBusy || _settings.ProtectedApps.Count == 0)
         {
             return;
         }
@@ -2390,11 +2647,24 @@ public partial class MainWindow : Window
 
     private async void RefreshProtectionButton_Click(object sender, RoutedEventArgs e)
     {
-        await RefreshProtectedAppsAsync(logIssues: true);
+        if (IsProtectionBusy)
+        {
+            return;
+        }
+
+        using (BeginProtectionBusy("Проверяю правила фаервола..."))
+        {
+            await RefreshProtectedAppsAsync(logIssues: true);
+        }
     }
 
     private async void ReinstallApp_Click(object sender, RoutedEventArgs e)
     {
+        if (IsProtectionBusy)
+        {
+            return;
+        }
+
         if ((sender as System.Windows.Controls.Button)?.DataContext is ProtectedAppRow row)
         {
             await ApplyRulesForAsync(new[] { row.App }, "apply");
@@ -2403,11 +2673,26 @@ public partial class MainWindow : Window
 
     private async void UpdatePathApp_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as System.Windows.Controls.Button)?.DataContext is not ProtectedAppRow row)
+        if (IsProtectionBusy)
         {
             return;
         }
 
+        if ((sender as System.Windows.Controls.Button)?.DataContext is ProtectedAppRow row)
+        {
+            await UpdatePathForRowAsync(row, interactive: true);
+        }
+    }
+
+    /// <summary>
+    /// Перепривязывает правило к новой версии программы. <paramref name="interactive"/> = false — вызов
+    /// автовосстановления: вместо окон с сообщениями строка в подвале и балун, человек видит только UAC.
+    /// Возвращает true, если новое правило стоит.
+    /// </summary>
+    private async Task<bool> UpdatePathForRowAsync(ProtectedAppRow row, bool interactive)
+    {
+        using var busy = BeginProtectionBusy("Ищу новую версию программы...");
+        using var working = MarkRowsWorking(new[] { row.App }, RowAction.UpdatePath);
         var app = row.App;
         var oldPath = app.Path;
         var oldRuleName = app.RuleName;
@@ -2433,11 +2718,18 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(newPath))
         {
-            System.Windows.MessageBox.Show(this,
-                $"Не удалось определить новый путь для «{app.Name}». Возможно, программа удалена или ещё не переустановлена — защита не восстановлена.",
-                "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+            var noPath = $"Не удалось определить новый путь для «{app.Name}». Возможно, программа удалена или ещё не переустановлена — защита не восстановлена.";
+            if (interactive)
+            {
+                System.Windows.MessageBox.Show(this, noPath, "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else
+            {
+                FooterText.Text = noPath;
+            }
+
             await RefreshProtectedAppsAsync(logIssues: false);
-            return;
+            return false;
         }
 
         var newRuleName = FirewallService.BuildRuleName(newPath);
@@ -2462,14 +2754,17 @@ public partial class MainWindow : Window
         {
             // Path updates re-create the rule, so they need the adapter list too. Ask again only when the
             // set of adapters changed since the user last confirmed it — otherwise this is a silent re-bind.
+            SetProtectionBusyText("Читаю сетевые адаптеры...");
             var adapters = await ResolveBlockedAdaptersAsync(alwaysConfirm: false);
             if (adapters is null)
             {
                 await RefreshProtectedAppsAsync(logIssues: false);
-                return;
+                return false;
             }
 
+            SetProtectionBusyText("Собираю правила старых версий...");
             var idlePreviousVersions = await CollectIdlePreviousVersionRulesAsync();
+            SetProtectionBusyText("Подтверди окно Windows (UAC)...");
             var result = await _firewallService.UpdatePathAsync(
                 pending, oldRuleName, adapters, CancellationToken.None, idlePreviousVersions);
 
@@ -2477,17 +2772,24 @@ public partial class MainWindow : Window
             {
                 await LogKillSwitchEventAsync("uac_cancelled", $"обновление пути отменено в UAC: {app.Name}", app);
                 FooterText.Text = "Обновление пути отменено в UAC. Путь не изменён.";
-                return;
+                return false;
             }
 
             if (!result.Success)
             {
                 await LogKillSwitchEventAsync("admin_error", $"ошибка обновления пути: {result.Error}", app);
-                System.Windows.MessageBox.Show(this,
-                    result.Error ?? "Не удалось обновить правило для нового пути.",
-                    "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+                var failure = result.Error ?? "Не удалось обновить правило для нового пути.";
+                if (interactive)
+                {
+                    System.Windows.MessageBox.Show(this, failure, "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                else
+                {
+                    FooterText.Text = failure;
+                }
+
                 await RefreshProtectedAppsAsync(logIssues: false);
-                return;
+                return false;
             }
 
             // Rule is in place — commit the new path/rule to the persisted app.
@@ -2512,13 +2814,24 @@ public partial class MainWindow : Window
 
             FooterText.Text = $"Путь «{app.Name}» обновлён. Старое правило сохраняется, пока прежняя версия может работать."
                 + (cleaned.Count > 0 ? $" Сняты ненужные правила старых версий: {cleaned.Count}." : string.Empty);
+            SetProtectionBusyText("Проверяю, что правила на месте...");
             await RefreshProtectedAppsAsync(logIssues: false);
+            return true;
         }
         catch (Exception ex)
         {
             await LogKillSwitchEventAsync("admin_error", $"исключение при обновлении пути: {ex.Message}", app);
-            System.Windows.MessageBox.Show(this, ex.Message, "VPN Health Monitor",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (interactive)
+            {
+                System.Windows.MessageBox.Show(this, ex.Message, "VPN Health Monitor",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else
+            {
+                FooterText.Text = $"Защита «{app.Name}» не восстановлена: {ex.Message}";
+            }
+
+            return false;
         }
     }
 
@@ -2542,7 +2855,7 @@ public partial class MainWindow : Window
 
     private async void RemoveApp_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as System.Windows.Controls.Button)?.DataContext is not ProtectedAppRow row)
+        if (IsProtectionBusy || (sender as System.Windows.Controls.Button)?.DataContext is not ProtectedAppRow row)
         {
             return;
         }
@@ -2578,6 +2891,9 @@ public partial class MainWindow : Window
             return;
         }
 
+        using var busy = BeginProtectionBusy("Подтверди окно Windows (UAC)...");
+        using var working = MarkRowsWorking(new[] { app }, RowAction.Remove);
+
         // Remove the rule first so we never leave an orphan, then drop it from settings.
         var result = await _firewallService.RemoveAsync(new[] { app }, CancellationToken.None);
         if (result.Cancelled)
@@ -2611,24 +2927,39 @@ public partial class MainWindow : Window
         await RefreshProtectedAppsAsync(logIssues: false);
     }
 
-    private async Task ApplyRulesForAsync(IReadOnlyList<ProtectedApp> apps, string action)
+    /// <param name="confirmAdapters">
+    /// true — список адаптеров показывается всегда (ручное применение). false — только если набор
+    /// адаптеров изменился с прошлого подтверждения: автовосстановление ставит правило по уже
+    /// подтверждённому списку, и от человека нужен один UAC.
+    /// </param>
+    /// <returns>Результат фаервола; null — операция не дошла до него (отказ в списке адаптеров, исключение).</returns>
+    private async Task<FirewallActionResult?> ApplyRulesForAsync(
+        IReadOnlyList<ProtectedApp> apps,
+        string action,
+        bool confirmAdapters = true,
+        bool interactive = true)
     {
+        using var busy = BeginProtectionBusy(action == "apply" ? "Читаю сетевые адаптеры..." : "Готовлю снятие правил...");
+        using var working = MarkRowsWorking(
+            action == "remove_all" ? _settings.ProtectedApps : apps,
+            action == "apply" ? RowAction.Reinstall : RowAction.Remove);
         try
         {
             IReadOnlyList<string> adapters = Array.Empty<string>();
             if (action == "apply")
             {
                 // Rules are only as good as the adapter list they bind to — the user confirms it first.
-                var resolved = await ResolveBlockedAdaptersAsync(alwaysConfirm: true);
+                var resolved = await ResolveBlockedAdaptersAsync(alwaysConfirm: confirmAdapters);
                 if (resolved is null)
                 {
                     await RefreshProtectedAppsAsync(logIssues: false);
-                    return;
+                    return null;
                 }
 
                 adapters = resolved;
             }
 
+            SetProtectionBusyText("Подтверди окно Windows (UAC)...");
             var result = action switch
             {
                 "remove_all" => await _firewallService.RemoveAllAsync(CancellationToken.None),
@@ -2641,7 +2972,7 @@ public partial class MainWindow : Window
                 await LogKillSwitchEventAsync("uac_cancelled", "операция с правилами отменена в UAC.");
                 FooterText.Text = "Операция отменена в UAC.";
                 await RefreshProtectedAppsAsync(logIssues: false);
-                return;
+                return result;
             }
 
             if (!result.Success && !string.IsNullOrWhiteSpace(result.Error))
@@ -2684,18 +3015,30 @@ public partial class MainWindow : Window
             }
 
             await LogApplyResultAsync(action, result);
+            SetProtectionBusyText("Проверяю, что правила на месте...");
             await RefreshProtectedAppsAsync(logIssues: false);
 
             if (result.Items.Any(i => i.State == "file_not_found"))
             {
                 FooterText.Text = "Часть программ не найдена по сохранённому пути — см. колонку «Статус».";
             }
+
+            return result;
         }
         catch (Exception ex)
         {
             await LogKillSwitchEventAsync("admin_error", $"исключение при операции с правилами: {ex.Message}");
-            System.Windows.MessageBox.Show(this, ex.Message, "VPN Health Monitor",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (interactive)
+            {
+                System.Windows.MessageBox.Show(this, ex.Message, "VPN Health Monitor",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else
+            {
+                FooterText.Text = $"Защита не восстановлена: {ex.Message}";
+            }
+
+            return null;
         }
     }
 
@@ -2759,6 +3102,10 @@ public partial class MainWindow : Window
 
         _protectedAppRows.Clear();
         var stale = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ruleLost = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var trackedStatuses = new List<ProtectionStatus>();
+        var repairCandidates = new List<(ProtectedAppRow Row, AutoRepairKind Kind)>();
+        var autoRepair = _settings.AutoRepairProtection;
 
         foreach (var app in _settings.ProtectedApps)
         {
@@ -2768,6 +3115,32 @@ public partial class MainWindow : Window
             {
                 status = ProtectionStatus.PathChanged;
                 newPath = resolved;
+            }
+
+            var identity = AppIdentityKey(app);
+            trackedStatuses.Add(status);
+            var repairKind = ProtectionAutoRepair.Decide(status, canVerifyLive, app.RulesAppliedAt.HasValue, newPath is not null);
+            if (status == ProtectionStatus.Protected)
+            {
+                // Защита на месте — следующий её слёт снова чинится сам.
+                _autoRepairAttempted.Remove(identity);
+            }
+
+            if (repairKind == AutoRepairKind.Reapply)
+            {
+                ruleLost.Add(identity);
+                if (!_notifiedRuleLost.Contains(identity))
+                {
+                    ShowNotification(
+                        "⚠️ Защита приложения слетела",
+                        autoRepair && !_autoRepairAttempted.Contains(identity)
+                            ? $"Правило фаервола для «{app.Name}» пропало — её прямой выход мимо VPN открыт. Ставлю правило заново: подтверди окно Windows (UAC)."
+                            : $"Правило фаервола для «{app.Name}» пропало — её прямой выход мимо VPN открыт. Открой вкладку «Приложения» и нажми «Переустановить».",
+                        Forms.ToolTipIcon.Error,
+                        bypassCooldown: true,
+                        respectQuietStart: false);
+                    await LogKillSwitchEventAsync("rule_lost", $"правило защиты пропало: {app.Name} ({app.RuleName})", app);
+                }
             }
 
             if (logIssues && canVerifyLive && status == ProtectionStatus.Error)
@@ -2782,7 +3155,7 @@ public partial class MainWindow : Window
 
             if (status == ProtectionStatus.PathChanged)
             {
-                var key = AppIdentityKey(app);
+                var key = identity;
                 stale.Add(key);
                 if (!_notifiedPathChange.Contains(key))
                 {
@@ -2791,7 +3164,9 @@ public partial class MainWindow : Window
                     // (bypassCooldown, без toggle) — цель «заметнее, не тише».
                     ShowNotification(
                         "⚠️ Новая версия без защиты",
-                        $"у «{app.Name}» найдена новая версия — её прямой выход ещё не заблокирован. Открой вкладку «Защищённые приложения» и нажми «Обновить путь».",
+                        autoRepair && repairKind == AutoRepairKind.UpdatePath && !_autoRepairAttempted.Contains(key)
+                            ? $"у «{app.Name}» новая версия — её прямой выход ещё не заблокирован. Обновляю путь сам: подтверди окно Windows (UAC)."
+                            : $"у «{app.Name}» найдена новая версия — её прямой выход ещё не заблокирован. Открой вкладку «Приложения» и нажми «Обновить путь».",
                         Forms.ToolTipIcon.Error,
                         bypassCooldown: true,
                         respectQuietStart: false);
@@ -2800,7 +3175,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            _protectedAppRows.Add(new ProtectedAppRow
+            var row = new ProtectedAppRow
             {
                 App = app,
                 Name = app.Name,
@@ -2809,17 +3184,148 @@ public partial class MainWindow : Window
                 StatusText = status.ToDisplayText(),
                 AppliedText = app.RulesAppliedAt.HasValue ? FormatTime(app.RulesAppliedAt.Value) : "—",
                 CanUpdatePath = status == ProtectionStatus.PathChanged,
-                ResolvedNewPath = newPath
-            });
+                ResolvedNewPath = newPath,
+                // Перерисовка посреди операции не гасит индикатор на кнопке.
+                WorkingAction = _workingRows.TryGetValue(app, out var working) ? working : null
+            };
+            _protectedAppRows.Add(row);
 
-            _lastKnownExists[AppIdentityKey(app)] = SafeExists(app.Path);
+            if (repairKind != AutoRepairKind.None && !_autoRepairAttempted.Contains(identity))
+            {
+                repairCandidates.Add((row, repairKind));
+            }
+
+            _lastKnownExists[identity] = SafeExists(app.Path);
         }
 
         AddUntrackedRuleRows(rules);
 
         _notifiedPathChange = stale;
+        _notifiedRuleLost = ruleLost;
         UpdateAdminStatus(canVerifyLive);
         UpdateBlockedAdaptersText();
+        UpdateProtectionSummary(ProtectionSummary.From(trackedStatuses), canVerifyLive);
+
+        _pendingAutoRepair.Clear();
+        if (autoRepair)
+        {
+            _pendingAutoRepair.AddRange(repairCandidates);
+            ScheduleAutoRepair();
+        }
+    }
+
+    // ----- Автовосстановление защиты -----
+
+    /// <summary>
+    /// Запуск ремонта откладывается за пределы пересчёта статуса: ремонт сам пересчитывает статус,
+    /// и прямой вызов отсюда ушёл бы в рекурсию.
+    /// </summary>
+    private void ScheduleAutoRepair()
+    {
+        if (_pendingAutoRepair.Count == 0 || _autoRepairScheduled)
+        {
+            return;
+        }
+
+        _autoRepairScheduled = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () =>
+        {
+            _autoRepairScheduled = false;
+            await RunAutoRepairAsync();
+        }));
+    }
+
+    /// <summary>
+    /// Делает за человека то, что он сделал бы руками: открывает окно на вкладке «Приложения»,
+    /// жмёт «Переустановить» (одним UAC на все пропавшие правила) и «Обновить путь» для новых версий.
+    /// От человека остаётся подтвердить UAC. Правила здесь только ставятся и перепривязываются —
+    /// снимать что-либо автоматически нельзя.
+    /// </summary>
+    private async Task RunAutoRepairAsync()
+    {
+        if (!_settings.AutoRepairProtection || _pendingAutoRepair.Count == 0)
+        {
+            return;
+        }
+
+        if (IsProtectionBusy)
+        {
+            // Идёт ручная операция — подождать её конца: в конце она сама перечитает статус.
+            var retry = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            retry.Tick += (_, _) =>
+            {
+                retry.Stop();
+                ScheduleAutoRepair();
+            };
+            retry.Start();
+            return;
+        }
+
+        var batch = _pendingAutoRepair.ToList();
+        _pendingAutoRepair.Clear();
+        foreach (var (row, _) in batch)
+        {
+            // Отметка до UAC: отказ в окне Windows не должен возвращаться каждые 15 секунд.
+            _autoRepairAttempted.Add(AppIdentityKey(row.App));
+        }
+
+        BringToFrontForUac();
+
+        var restored = new List<string>();
+        var failed = new List<string>();
+
+        var reapply = batch.Where(c => c.Kind == AutoRepairKind.Reapply).Select(c => c.Row.App).ToList();
+        if (reapply.Count > 0)
+        {
+            await LogKillSwitchEventAsync("auto_repair", $"автовосстановление: ставлю правила заново — {string.Join(", ", reapply.Select(a => a.Name))}");
+            var result = await ApplyRulesForAsync(reapply, "apply", confirmAdapters: false, interactive: false);
+            foreach (var app in reapply)
+            {
+                var ok = result is { Cancelled: false }
+                    && result.Items.Any(i => i.State == "applied"
+                        && string.Equals(i.RuleName, app.RuleName, StringComparison.OrdinalIgnoreCase));
+                (ok ? restored : failed).Add(app.Name);
+            }
+        }
+
+        foreach (var (row, _) in batch.Where(c => c.Kind == AutoRepairKind.UpdatePath))
+        {
+            await LogKillSwitchEventAsync("auto_repair", $"автовосстановление: обновляю путь — {row.App.Name}", row.App);
+            (await UpdatePathForRowAsync(row, interactive: false) ? restored : failed).Add(row.App.Name);
+        }
+
+        if (failed.Count > 0)
+        {
+            ShowNotification(
+                "⚠️ Защита не восстановлена",
+                $"Без защиты: {string.Join(", ", failed)}. UAC отменён или правило не встало — открой вкладку «Приложения». Сам повторно спрашивать не буду.",
+                Forms.ToolTipIcon.Error,
+                bypassCooldown: true,
+                respectQuietStart: false);
+        }
+        else if (restored.Count > 0)
+        {
+            ShowNotification(
+                "Защита восстановлена",
+                $"Прямой выход снова закрыт: {string.Join(", ", restored)}.",
+                Forms.ToolTipIcon.Info,
+                bypassCooldown: true,
+                respectQuietStart: false);
+        }
+    }
+
+    /// <summary>
+    /// Окно UAC от фонового процесса Windows не выводит на передний план — оно только мигает на
+    /// панели задач. Поэтому перед запросом прав окно приложения поднимается из трея и выходит вперёд,
+    /// а на экране сразу видно, что и почему чинится.
+    /// </summary>
+    private void BringToFrontForUac()
+    {
+        RestoreFromTray();
+        MainTabs.SelectedItem = AppsTab;
+        Topmost = true;
+        Topmost = false;
+        Activate();
     }
 
     /// <summary>
@@ -2962,7 +3468,7 @@ public partial class MainWindow : Window
     /// </summary>
     private async void ProtectedAppsTimer_Tick(object? sender, EventArgs e)
     {
-        if (_protectedAppsRefreshInFlight)
+        if (_protectedAppsRefreshInFlight || IsProtectionBusy)
         {
             return;
         }
@@ -2970,7 +3476,9 @@ public partial class MainWindow : Window
         _protectedAppsRefreshInFlight = true;
         try
         {
-            await MaybeRefreshProtectedOnChangeAsync();
+            _protectedAppsTickCount++;
+            var checkLiveRules = _protectedAppsTickCount % LiveRuleCheckEveryTicks == 0;
+            await MaybeRefreshProtectedOnChangeAsync(checkLiveRules);
             _protectedAppsWatchErrorShown = false;
         }
         catch (Exception)
@@ -2979,7 +3487,7 @@ public partial class MainWindow : Window
             {
                 _protectedAppsWatchErrorShown = true;
                 ShowNotification("⚠️ Проверка защиты не удалась",
-                    "Не удалось проверить пути защищённых программ. Открой вкладку «Защищённые приложения».",
+                    "Не удалось проверить пути защищённых программ. Открой вкладку «Приложения».",
                     Forms.ToolTipIcon.Error, bypassCooldown: true, respectQuietStart: false);
             }
         }
@@ -2989,7 +3497,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task MaybeRefreshProtectedOnChangeAsync()
+    private async Task MaybeRefreshProtectedOnChangeAsync(bool checkLiveRules = false)
     {
         if (_settings.ProtectedApps.Count == 0)
         {
@@ -2997,6 +3505,23 @@ public partial class MainWindow : Window
         }
 
         var changed = VersionedProtectedAppPathResolver.Resolve(_settings.ProtectedApps).Count > 0;
+
+        // Пропавшее правило по файлам не видно: путь на месте, а в фаерволе пусто (сброс фаервола,
+        // переустановка этого приложения, чужая чистка). Раз в минуту — сверка с живыми правилами;
+        // список перерисовывается, только если статус какой-то программы правда разошёлся с экраном.
+        if (!changed && checkLiveRules)
+        {
+            var rules = await _firewallService.QueryRulesAsync(CancellationToken.None);
+            if (rules is not null)
+            {
+                var shown = _protectedAppRows
+                    .Where(row => _settings.ProtectedApps.Contains(row.App))
+                    .ToDictionary(row => row.App, row => row.Status);
+                changed = _settings.ProtectedApps.Any(app =>
+                    !shown.TryGetValue(app, out var onScreen)
+                    || (onScreen != ProtectionStatus.PathChanged && onScreen != FirewallService.ComputeStatus(app, rules)));
+            }
+        }
         foreach (var app in _settings.ProtectedApps)
         {
             var key = AppIdentityKey(app);

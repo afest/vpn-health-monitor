@@ -16,6 +16,7 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <conv:RatioConverter x:Key="HeightRatio" />
+        <conv:AnyTrueConverter x:Key="AnyTrue" />
 
         <!-- Палитра. Единственный набор цветов приложения: серо-синяя база + цвета статусов,
              те же значения используются в code-behind для баннера и tray-иконки. -->
@@ -266,38 +267,114 @@
             </Setter>
         </Style>
 
-        <!-- Вкладки: подчёркивание вместо объёмного «конверта» WPF по умолчанию. -->
-        <!-- Вкладки — основная навигация: в них заходят каждый раз, поэтому они крупнее кнопок
-             мониторинга, которые теперь живут иконками в плашке. -->
-        <Style TargetType="TabItem">
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
-            <Setter Property="FontSize" Value="15" />
-            <Setter Property="Cursor" Value="Hand" />
+        <!-- Индикатор «взялось в работу»: кольцо с бегущей дугой. Крутится, только пока видно —
+             вечная анимация в свёрнутом элементе гоняла бы отрисовку окна в трее впустую. -->
+        <Style x:Key="Spinner" TargetType="Control">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
             <Setter Property="Template">
                 <Setter.Value>
-                    <ControlTemplate TargetType="TabItem">
+                    <ControlTemplate TargetType="Control">
+                        <Viewbox x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                            <Viewbox.RenderTransform>
+                                <RotateTransform Angle="0" />
+                            </Viewbox.RenderTransform>
+                            <Canvas Width="16" Height="16">
+                                <Ellipse Canvas.Left="1" Canvas.Top="1" Width="14" Height="14"
+                                         Stroke="{TemplateBinding Foreground}" StrokeThickness="2" Opacity="0.25" />
+                                <Path Data="M 8,1 A 7,7 0 0 1 15,8"
+                                      Stroke="{TemplateBinding Foreground}"
+                                      StrokeThickness="2"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round" />
+                            </Canvas>
+                        </Viewbox>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsVisible" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard x:Name="SpinStoryboard">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="Root"
+                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                             From="0" To="360" Duration="0:0:0.9"
+                                                             RepeatBehavior="Forever" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <StopStoryboard BeginStoryboardName="SpinStoryboard" />
+                                </Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Действия над списком программ — в шапке его карточки, как переключатель «Компактно /
+             Подробно» у событий. Белые, по ширине текста, ниже обычных кнопок: шапка карточки не растёт. -->
+        <Style x:Key="CardActionButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="12,4" />
+            <Setter Property="Margin" Value="8,0,0,0" />
+        </Style>
+
+        <!-- «?» — того же вида, что шестерёнка и «⋯»: одна строка, один цвет. Нажатая — серым фоном,
+             без акцента. -->
+        <Style x:Key="GlyphToggle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
                         <Border x:Name="Bg"
-                                Background="Transparent"
-                                BorderBrush="Transparent"
-                                BorderThickness="0,0,0,3"
-                                Padding="20,12"
-                                Margin="0,0,6,0">
-                            <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
+                                Background="{StaticResource SurfaceBrush}"
+                                BorderBrush="{StaticResource LineStrongBrush}"
+                                BorderThickness="1"
+                                CornerRadius="7"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bg" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                                <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
-                                <Setter Property="FontWeight" Value="SemiBold" />
-                            </Trigger>
-                            <MultiTrigger>
-                                <MultiTrigger.Conditions>
-                                    <Condition Property="IsSelected" Value="False" />
-                                    <Condition Property="IsMouseOver" Value="True" />
-                                </MultiTrigger.Conditions>
+                            <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bg" Property="Background" Value="{StaticResource SoftBrush}" />
-                                <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
-                            </MultiTrigger>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#E1E7EC" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Плашка защиты приложений рядом с плашкой статуса VPN: такая же по форме, сплошной цвет
+             задаётся из кода по состоянию. Наведение чуть высветляет — плашка кликается. -->
+        <Style x:Key="BannerProtectionButton" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="#25844B" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}" CornerRadius="8" Padding="18">
+                                <ContentPresenter VerticalAlignment="Top" HorizontalAlignment="Left" />
+                            </Border>
+                            <Border x:Name="Hover" CornerRadius="8" Background="#1AFFFFFF" Visibility="Collapsed" IsHitTestVisible="False" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Hover" Property="Visibility" Value="Visible" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -351,6 +428,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -358,7 +436,7 @@
         <!-- Плашка обновления. Скрыта, пока обновления нет: пустая полоса над статусом отнимала бы
              место у того, ради чего программу открывают. -->
         <Border x:Name="UpdateBanner"
-                Grid.Row="0"
+                Grid.Row="1"
                 Background="#1F6FEB"
                 CornerRadius="8"
                 Padding="14,10"
@@ -404,35 +482,73 @@
             </Grid>
         </Border>
 
+        <!-- Две плашки одной ширины — они же переключатель разделов. «Сводка» — вердикт VPN,
+             «Приложения» — защита программ: VPN может быть в порядке, а программа уже ходит мимо него,
+             поэтому у защиты своя плашка и свой цвет. Цвет плашки — всегда состояние; выбранный раздел
+             показывает тёмная рамка вокруг (место под неё занято всегда, при переключении ничего не прыгает).
+             Отрицательный отступ выносит рамку наружу: края самих плашек совпадают с краями карточек ниже. -->
+        <!-- Сетка верха, по ней же стоят карточки «Сводки»: колонки *, *, 50. Рамки выбора (3 + 3 отступ)
+             соседних плашек касаются — между самими плашками 12, как между всеми карточками окна.
+             Снизу 4 + 6 рамки + 2 пустой строки заголовков вкладок = те же 12 до карточек. -->
+        <Grid Grid.Row="2" Margin="-6,-6,-6,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="50" />
+            </Grid.ColumnDefinitions>
+
+        <Border x:Name="SummaryPlateRing"
+                Grid.Column="0"
+                BorderThickness="3"
+                Padding="3"
+                CornerRadius="12"
+                BorderBrush="Transparent"
+                Background="Transparent"
+                Cursor="Hand"
+                ToolTip="Сводка: сеть, статистика, события"
+                MouseLeftButtonUp="SummaryPlate_Click">
         <Border x:Name="StatusBanner"
-                Grid.Row="1"
                 Background="#606A76"
                 CornerRadius="8"
-                Padding="18"
-                Margin="0,0,0,12">
+                Padding="18">
+            <!-- Те же три строки, что у плашки «Приложения»: подпись, вердикт, пояснение. Кнопки
+                 мониторинга стоят справа от первых двух строк, пояснение идёт под ними на всю ширину. -->
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <StackPanel Grid.Column="0">
-                    <TextBlock x:Name="StatusText"
-                               Text="НЕИЗВЕСТНО"
-                               Foreground="White"
-                               FontSize="30"
-                               FontWeight="Bold" />
-                    <TextBlock x:Name="StatusDescriptionText"
-                               Text="Загрузи настройки и запусти проверку."
-                               Foreground="#EEF2F5"
-                               FontSize="14"
-                               TextWrapping="Wrap"
-                               Margin="0,4,0,0" />
-                </StackPanel>
+                <TextBlock Grid.Row="0" Text="СВОДКА" Foreground="White" Opacity="0.9" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,2" />
+                <TextBlock x:Name="StatusText"
+                           Grid.Row="1"
+                           Text="НЕИЗВЕСТНО"
+                           TextTrimming="CharacterEllipsis"
+                           Foreground="White"
+                           FontSize="30"
+                           FontWeight="Bold" />
+                <!-- Пояснения обеих плашек — в одну строку: плашки одной высоты и строки на одном
+                     уровне. Не влезло — многоточие, полный текст во всплывающей подсказке. -->
+                <TextBlock x:Name="StatusDescriptionText"
+                           Grid.Row="2"
+                           Grid.ColumnSpan="2"
+                           Text="Загрузи настройки и запусти проверку."
+                           Foreground="#EEF2F5"
+                           FontSize="14"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
+                           Margin="0,4,0,0" />
 
-                <!-- Управление мониторингом живёт в плашке: его трогают редко, а вкладки — каждый заход.
+                <!-- Управление мониторингом живёт в плашке: его трогают редко, а разделы — каждый заход.
                      Иконки линейные и белые, чтобы читаться на любом цвете статуса. -->
                 <StackPanel Grid.Column="1"
+                            Grid.Row="0"
+                            Grid.RowSpan="2"
                             Orientation="Horizontal"
                             VerticalAlignment="Top"
                             Margin="12,0,0,0">
@@ -492,21 +608,90 @@
                 </StackPanel>
             </Grid>
         </Border>
+        </Border>
 
-        <!-- Меню «ещё» стоит в одной строке с вкладками, у правого края: отдельный ряд над ними
-             давал пустую полосу и лишний скачок по вертикали. -->
-        <Button x:Name="MoreActionsButton"
-                Grid.Row="2"
-                HorizontalAlignment="Right"
-                VerticalAlignment="Top"
-                Margin="0,4,0,0"
-                Panel.ZIndex="1"
-                Style="{StaticResource GlyphButton}"
-                Content="&#x22EF;"
-                ToolTip="Ещё действия: baseline, папка логов, экспорт CSV"
-                Click="MoreActionsButton_Click">
+        <!-- Плашка защиты приложений: та же высота и та же типографика, что у статуса VPN, сплошной
+             цвет по состоянию (зелёный / оранжевый / красный). Пока идёт операция с правилами,
+             вместо пояснения — текущий шаг и индикатор. Клик открывает раздел «Приложения». -->
+        <Border x:Name="AppsPlateRing"
+                Grid.Column="1"
+                BorderThickness="3"
+                Padding="3"
+                CornerRadius="12"
+                BorderBrush="Transparent">
+        <Button x:Name="BannerProtectionBlock"
+                Style="{StaticResource BannerProtectionButton}"
+                AutomationProperties.Name="Приложения"
+                Click="BannerProtectionBlock_Click">
+            <StackPanel>
+                <TextBlock Text="ПРИЛОЖЕНИЯ" Opacity="0.9" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,2" />
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="BannerProtectionGlyph" Text="&#x2713;" FontSize="26" FontWeight="Bold" Margin="0,0,10,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="BannerProtectionCount" Text="0 ИЗ 0" FontSize="30" FontWeight="Bold" VerticalAlignment="Center" />
+                    <Control x:Name="BannerProtectionSpinner"
+                             Style="{StaticResource Spinner}"
+                             Width="20" Height="20"
+                             Margin="14,0,0,0"
+                             VerticalAlignment="Center"
+                             Visibility="Collapsed" />
+                </StackPanel>
+                <TextBlock x:Name="BannerProtectionDetail"
+                           Text="приложений под защитой"
+                           Foreground="#EEF2F5"
+                           FontSize="14"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
+                           Margin="0,4,0,0" />
+            </StackPanel>
+        </Button>
+        </Border>
+
+        <!-- «?», настройки и «⋯» — столбиком справа от плашки «Приложения», ровно на её высоту:
+             верх первой кнопки и низ последней совпадают с краями плашки (отступ 6 — это рамка выбора). -->
+        <Grid Grid.Column="2" Margin="6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="8" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="8" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <ToggleButton x:Name="ProtectionHelpToggle"
+                          Grid.Row="0"
+                          Style="{StaticResource GlyphToggle}"
+                          Width="Auto"
+                          Height="Auto"
+                          Margin="0"
+                          Content="?"
+                          Click="ProtectionNoteToggle_Click"
+                          ToolTip="Как работает защита приложений и что делать, если пропал интернет" />
+            <Button x:Name="SettingsButton"
+                    Grid.Row="2"
+                    Width="Auto"
+                    MinHeight="0"
+                    ToolTip="Настройки"
+                    AutomationProperties.Name="Настройки"
+                    Click="SettingsButton_Click">
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource GlyphButton}">
+                        <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+                        <Setter Property="FontSize" Value="15" />
+                    </Style>
+                </Button.Style>
+                <Button.Content>&#xE713;</Button.Content>
+            </Button>
+            <Button x:Name="MoreActionsButton"
+                    Grid.Row="4"
+                    Width="Auto"
+                    MinHeight="0"
+                    Style="{StaticResource GlyphButton}"
+                    Content="&#x22EF;"
+                    ToolTip="Ещё действия: настройки, baseline, папка логов, экспорт CSV"
+                    Click="MoreActionsButton_Click">
             <Button.ContextMenu>
                 <ContextMenu>
+                    <MenuItem Header="Настройки" Click="SettingsButton_Click" />
+                    <Separator />
                     <MenuItem x:Name="BaselineButton" Header="Текущий IP как baseline" Click="BaselineButton_Click" />
                     <MenuItem Header="Открыть папку логов" Click="OpenLogsButton_Click" />
                     <MenuItem Header="Export CSV" Click="ExportCsvButton_Click" />
@@ -516,15 +701,21 @@
                     <MenuItem Header="О программе" Click="AboutMenu_Click" />
                 </ContextMenu>
             </Button.ContextMenu>
-        </Button>
+            </Button>
+        </Grid>
+        </Grid>
 
-        <TabControl x:Name="MainTabs" Grid.Row="2">
-            <TabItem Header="Сводка">
-                <Grid x:Name="SummaryLayout" Margin="0,12,0,0">
+        <!-- Заголовки вкладок скрыты: разделы переключают плашки наверху и шестерёнка. -->
+        <TabControl x:Name="MainTabs" Grid.Row="3" SelectionChanged="MainTabs_SelectionChanged">
+            <TabItem x:Name="SummaryTab" Header="Сводка" Visibility="Collapsed">
+                <!-- Та же сетка, что у плашек наверху (*, *, 50, поля −6 под рамку выбора): «Текущая сеть»
+                     ровно под «Сводкой», «Статистика сессии» и «Проверки качества» вместе — под «Приложениями»
+                     со столбиком кнопок. Все промежутки — 12. -->
+                <Grid x:Name="SummaryLayout" Margin="-6,0,-6,0">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1.8*" />
-                        <ColumnDefinition Width="1*" />
-                        <ColumnDefinition Width="1.05*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="50" />
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -536,7 +727,7 @@
                     <!-- Три блока свёрнуты по умолчанию: место отдано таблице событий.
                          В свёрнутой шапке остаётся то, ради чего в блок заглядывают, плюс
                          значок ⚠, если внутри блока появилась проблема. -->
-                    <Border Grid.Column="0" Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,10,10" VerticalAlignment="Top">
+                    <Border Grid.Column="0" Grid.Row="0" Style="{StaticResource Card}" Margin="6,0,6,12" VerticalAlignment="Top">
                         <StackPanel>
                             <ToggleButton x:Name="NetworkCardToggle" Style="{StaticResource CardHeaderToggle}">
                                 <Grid>
@@ -614,7 +805,13 @@
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Column="1" Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,10,10" VerticalAlignment="Top">
+                    <Grid Grid.Column="1" Grid.ColumnSpan="2" Grid.Row="0" Margin="6,0,6,12" VerticalAlignment="Top">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Style="{StaticResource Card}" VerticalAlignment="Top">
                         <StackPanel>
                             <ToggleButton x:Name="SessionCardToggle" Style="{StaticResource CardHeaderToggle}">
                                 <Grid>
@@ -655,7 +852,7 @@
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Column="2" Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,0,10" VerticalAlignment="Top">
+                    <Border Grid.Column="2" Style="{StaticResource Card}" VerticalAlignment="Top">
                         <StackPanel>
                             <ToggleButton x:Name="QualityCardToggle" Style="{StaticResource CardHeaderToggle}">
                                 <Grid>
@@ -696,7 +893,9 @@
                         </StackPanel>
                     </Border>
 
-                    <Border Grid.Column="0" Grid.ColumnSpan="3" Grid.Row="1" Style="{StaticResource Card}">
+                    </Grid>
+
+                    <Border Grid.Column="0" Grid.ColumnSpan="3" Grid.Row="1" Style="{StaticResource Card}" Margin="6,0,6,0">
                         <DockPanel>
                             <Grid DockPanel.Dock="Top" Margin="14,11,10,6">
                                 <Grid.ColumnDefinitions>
@@ -747,8 +946,8 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Защищённые приложения">
-                <Grid Margin="0,12,0,0">
+            <TabItem x:Name="AppsTab" Header="Приложения" Visibility="Collapsed">
+                <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -756,77 +955,14 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- Динамический статус прав видно всегда: он объясняет, почему кнопки не срабатывают.
-                         Постоянное объяснение режима убрано под «?». -->
-                    <Grid Grid.Row="0" Margin="0,0,0,10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Border Grid.Column="0"
-                                x:Name="AdminStatusBorder"
-                                Background="{StaticResource SurfaceBrush}"
-                                BorderBrush="{StaticResource LineBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8"
-                                Padding="12,7"
-                                Margin="0,0,8,0">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock x:Name="AdminStatusGlyph"
-                                           Text="&#x25CF;"
-                                           FontSize="13"
-                                           Margin="0,0,8,0"
-                                           VerticalAlignment="Center"
-                                           Foreground="{StaticResource MutedBrush}" />
-                                <TextBlock x:Name="AdminStatusText"
-                                           Text="Права администратора: проверяю..."
-                                           FontSize="12"
-                                           VerticalAlignment="Center"
-                                           TextTrimming="CharacterEllipsis"
-                                           Foreground="{StaticResource InkBrush}" />
-                            </StackPanel>
-                        </Border>
-                        <ToggleButton x:Name="ProtectionHelpToggle"
-                                      Grid.Column="1"
-                                      Width="34"
-                                      Height="34"
-                                      Cursor="Hand"
-                                      ToolTip="Как работает режим «закрыто по умолчанию» и что делать, если пропал интернет">
-                            <ToggleButton.Template>
-                                <ControlTemplate TargetType="ToggleButton">
-                                    <Border x:Name="Bg"
-                                            Background="{StaticResource SurfaceBrush}"
-                                            BorderBrush="{StaticResource LineStrongBrush}"
-                                            BorderThickness="1"
-                                            CornerRadius="17">
-                                        <TextBlock Text="?"
-                                                   FontSize="15"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource MutedBrush}"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center" />
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsChecked" Value="True">
-                                            <Setter TargetName="Bg" Property="Background" Value="{StaticResource SoftBrush}" />
-                                            <Setter TargetName="Bg" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                                        </Trigger>
-                                        <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter TargetName="Bg" Property="Background" Value="{StaticResource SoftBrush}" />
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </ToggleButton.Template>
-                        </ToggleButton>
-                    </Grid>
-
-                    <Border Grid.Row="1"
+                    <!-- Пояснение «?» — над всем разделом: открывается сверху, под плашками. -->
+                    <Border Grid.Row="0"
                             Background="#FFF6E6"
                             BorderBrush="#E0C580"
                             BorderThickness="1"
                             CornerRadius="8"
                             Padding="12"
-                            Margin="0,0,0,10"
+                            Margin="0,0,0,12"
                             Visibility="{Binding IsChecked, ElementName=ProtectionHelpToggle, Converter={StaticResource BoolToVis}}">
                         <StackPanel>
                             <TextBlock Text="Режим «закрыто по умолчанию» для выбранных программ" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
@@ -836,23 +972,39 @@
                                        Margin="0,10,0,0" Text="Адаптеры блокировки: список появится после применения правил." />
                             <TextBlock Style="{StaticResource LabelText}" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="#8A6D1F"
                                        Text="Пропал интернет? Нажми «Отключить защиту» — правила снимутся. Если приложение не открывается, запусти tools\remove-protection.bat из папки приложения: он сам попросит права администратора." />
+                            <!-- Бывший «!»: без прав администратора — что это значит. С правами строки нет. -->
+                            <TextBlock x:Name="AdminStatusText"
+                                       Style="{StaticResource LabelText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,10,0,0"
+                                       Text="Приложение запущено без прав администратора: каждая операция с правилами запросит UAC." />
                         </StackPanel>
                     </Border>
 
-                    <WrapPanel Grid.Row="2" Margin="0,0,0,10">
-                        <Button Content="Добавить программу" Click="AddAppButton_Click" />
-                        <Button Content="Применить правила" Click="ApplyRulesButton_Click" />
-                        <Button Content="Отключить защиту" Click="DisableProtectionButton_Click" />
-                        <Button Content="Обновить статус" Click="RefreshProtectionButton_Click" />
-                    </WrapPanel>
+                    <!-- Шапка раздела отдельной плашкой на всю ширину: заголовок и действия над списком.
+                         Таблица — своей плашкой ниже, кнопки к ней не прилипают. -->
+                    <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14,9,10,9" Margin="0,0,0,12">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Защищённые программы"
+                                       Style="{StaticResource CardTitleText}"
+                                       VerticalAlignment="Center" />
+                            <!-- Пока идёт операция, кнопки серые: шаг операции показывает плашка «Приложения». -->
+                            <StackPanel x:Name="ProtectionActionsPanel" Grid.Column="1" Orientation="Horizontal">
+                                <Button Style="{StaticResource CardActionButton}" Content="Добавить программу" Click="AddAppButton_Click" />
+                                <Button Style="{StaticResource CardActionButton}" Content="Применить правила" Click="ApplyRulesButton_Click" />
+                                <Button Style="{StaticResource CardActionButton}" Content="Отключить защиту" Click="DisableProtectionButton_Click" />
+                                <Button Style="{StaticResource CardActionButton}" Content="Обновить статус" Click="RefreshProtectionButton_Click" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
 
                     <Border Grid.Row="3" Style="{StaticResource Card}">
                         <DockPanel>
-                            <TextBlock DockPanel.Dock="Top"
-                                       Text="Защищённые программы"
-                                       Style="{StaticResource CardTitleText}"
-                                       Margin="14,11,14,6" />
-                            <ListView x:Name="ProtectedAppsList" Margin="4,0,4,6" MinHeight="200" SizeChanged="ProtectedAppsList_SizeChanged">
+                            <ListView x:Name="ProtectedAppsList" Margin="4,4,4,6" MinHeight="200" SizeChanged="ProtectedAppsList_SizeChanged">
                                 <ListView.ItemContainerStyle>
                                     <Style TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}">
                                         <Style.Triggers>
@@ -921,24 +1073,71 @@
                                             </GridViewColumn.CellTemplate>
                                         </GridViewColumn>
                                         <GridViewColumn Header="Правила применены" Width="140" DisplayMemberBinding="{Binding AppliedText}" />
-                                        <GridViewColumn Header="Действия" Width="300">
+                                        <GridViewColumn Header="Действия" Width="400">
                                             <GridViewColumn.CellTemplate>
                                                 <DataTemplate>
+                                                    <!-- Пока идёт операция с правилами, кнопки строк заблокированы, а на нажатой
+                                                         крутится индикатор: видно, что именно в работе. Список не тускнеет.
+                                                         Ширина кнопок фиксирована с местом под индикатор: появляясь, он не
+                                                         сдвигает соседние кнопки. -->
                                                     <WrapPanel Orientation="Horizontal">
-                                                        <Button Content="Обновить путь" Click="UpdatePathApp_Click"
+                                                        <Button Click="UpdatePathApp_Click"
                                                                 Visibility="{Binding CanUpdatePath, Converter={StaticResource BoolToVis}}"
                                                                 ToolTip="{Binding ResolvedNewPath}"
-                                                                Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
+                                                                IsHitTestVisible="{Binding DataContext.IsIdle, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                                Width="134" Margin="0,0,6,0" Padding="8,3" MinHeight="26">
+                                                            <Button.IsEnabled>
+                                                                <MultiBinding Converter="{StaticResource AnyTrue}">
+                                                                    <Binding Path="DataContext.IsIdle" RelativeSource="{RelativeSource AncestorType=ListView}" />
+                                                                    <Binding Path="IsUpdatingPath" />
+                                                                </MultiBinding>
+                                                            </Button.IsEnabled>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Control Style="{StaticResource Spinner}" Width="12" Height="12" Margin="0,0,7,0"
+                                                                         Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center"
+                                                                         Visibility="{Binding IsUpdatingPath, Converter={StaticResource BoolToVis}}" />
+                                                                <TextBlock Text="Обновить путь" />
+                                                            </StackPanel>
+                                                        </Button>
                                                         <Button Content="Взять под наблюдение" Click="AdoptRule_Click"
                                                                 Visibility="{Binding CanAdopt, Converter={StaticResource BoolToVis}}"
                                                                 ToolTip="Правило уже действует. Кнопка только добавляет программу в список, UAC не нужен."
+                                                                IsEnabled="{Binding DataContext.IsIdle, RelativeSource={RelativeSource AncestorType=ListView}}"
                                                                 Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
-                                                        <Button Content="Переустановить" Click="ReinstallApp_Click"
+                                                        <Button Click="ReinstallApp_Click"
                                                                 Visibility="{Binding CanReinstall, Converter={StaticResource BoolToVis}}"
-                                                                Margin="0,0,6,0" Padding="10,3" MinHeight="26" />
-                                                        <Button Content="Удалить" Click="RemoveApp_Click"
+                                                                IsHitTestVisible="{Binding DataContext.IsIdle, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                                Width="142" Margin="0,0,6,0" Padding="8,3" MinHeight="26">
+                                                            <Button.IsEnabled>
+                                                                <MultiBinding Converter="{StaticResource AnyTrue}">
+                                                                    <Binding Path="DataContext.IsIdle" RelativeSource="{RelativeSource AncestorType=ListView}" />
+                                                                    <Binding Path="IsReinstalling" />
+                                                                </MultiBinding>
+                                                            </Button.IsEnabled>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Control Style="{StaticResource Spinner}" Width="12" Height="12" Margin="0,0,7,0"
+                                                                         Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center"
+                                                                         Visibility="{Binding IsReinstalling, Converter={StaticResource BoolToVis}}" />
+                                                                <TextBlock Text="Переустановить" />
+                                                            </StackPanel>
+                                                        </Button>
+                                                        <Button Click="RemoveApp_Click"
                                                                 Visibility="{Binding CanRemove, Converter={StaticResource BoolToVis}}"
-                                                                Margin="0" Padding="10,3" MinHeight="26" />
+                                                                IsHitTestVisible="{Binding DataContext.IsIdle, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                                Width="96" Margin="0" Padding="8,3" MinHeight="26">
+                                                            <Button.IsEnabled>
+                                                                <MultiBinding Converter="{StaticResource AnyTrue}">
+                                                                    <Binding Path="DataContext.IsIdle" RelativeSource="{RelativeSource AncestorType=ListView}" />
+                                                                    <Binding Path="IsRemoving" />
+                                                                </MultiBinding>
+                                                            </Button.IsEnabled>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Control Style="{StaticResource Spinner}" Width="12" Height="12" Margin="0,0,7,0"
+                                                                         Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center"
+                                                                         Visibility="{Binding IsRemoving, Converter={StaticResource BoolToVis}}" />
+                                                                <TextBlock Text="Удалить" />
+                                                            </StackPanel>
+                                                        </Button>
                                                         <TextBlock Text="снять — после перезапуска программы"
                                                                    Visibility="{Binding IsPreviousVersionInUse, Converter={StaticResource BoolToVis}}"
                                                                    Foreground="{StaticResource MutedBrush}"
@@ -956,11 +1155,12 @@
                 </Grid>
             </TabItem>
 
-            <TabItem x:Name="SettingsTab" Header="Настройки">
+            <!-- Заголовок вкладки скрыт: вход — шестерёнка рядом с «⋯». -->
+            <TabItem x:Name="SettingsTab" Header="Настройки" Visibility="Collapsed">
                 <!-- Настройки в такой же карточке, как сводка и защищённые приложения: на голом сером
                      фоне список уходил под полосу вкладок, и край страницы был неразличим.
                      Скролл внутри карточки, поэтому её рамка остаётся на месте при прокрутке. -->
-                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                <Border Style="{StaticResource Card}">
                     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,4,16,16">
                         <Grid Margin="0,12,16,0">
                         <Grid.ColumnDefinitions>
@@ -1070,6 +1270,11 @@
                                       ToolTip="Внешний IP меняется часто и мало влияет на баны. По умолчанию выключен, чтобы не зашумлять важные алерты." />
                             <TextBlock Style="{StaticResource LabelText}" Margin="18,6,0,0" TextWrapping="Wrap"
                                        Text="Алерт «защита приложения не действует» (kill-switch) показывается всегда — это сигнал безопасности." />
+                            <CheckBox x:Name="AutoRepairProtectionCheckBox"
+                                      Content="Слетела защита приложения — сразу восстанавливать (останется подтвердить UAC)"
+                                      IsChecked="True"
+                                      Margin="0,10,0,0"
+                                      ToolTip="Новая версия программы без правила или пропавшее правило: приложение само открывает окно, нажимает «Обновить путь» или «Переустановить» и запрашивает UAC. Отказ в UAC повторно не спрашивается, пока защита не восстановится или приложение не перезапустят." />
                         </StackPanel>
 
                         <TextBlock Grid.Row="13" Grid.Column="0" Style="{StaticResource LabelText}" Text="Закрывать в трей" ToolTip="Если мониторинг запущен, закрытие окна спрячет его в tray, а не остановит мониторинг." />
@@ -1168,7 +1373,7 @@
         </TabControl>
 
         <TextBlock x:Name="FooterText"
-                   Grid.Row="3"
+                   Grid.Row="4"
                    Text="Настройки: загрузка..."
                    Foreground="{StaticResource MutedBrush}"
                    FontSize="12"
