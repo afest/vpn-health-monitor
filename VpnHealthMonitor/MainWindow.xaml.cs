@@ -2690,66 +2690,86 @@ public partial class MainWindow : Window
     /// Возвращает true, если новое правило стоит.
     /// </summary>
     private async Task<bool> UpdatePathForRowAsync(ProtectedAppRow row, bool interactive)
+        => (await UpdatePathsForRowsAsync(new[] { row }, interactive)).Contains(row.App);
+
+    /// <summary>
+    /// Перепривязка нескольких программ одним UAC: обновившийся Codex меняет пути сразу у нескольких
+    /// своих .exe. Новый путь и правило записываются в настройки только у той программы, чьё правило
+    /// действительно встало, — остальные остаются на старом пути и красной строкой.
+    /// Возвращает программы, защита которых восстановлена.
+    /// </summary>
+    private async Task<HashSet<ProtectedApp>> UpdatePathsForRowsAsync(IReadOnlyList<ProtectedAppRow> rows, bool interactive)
     {
+        var restored = new HashSet<ProtectedApp>(ReferenceEqualityComparer.Instance);
         using var busy = BeginProtectionBusy("Ищу новую версию программы...");
-        using var working = MarkRowsWorking(new[] { row.App }, RowAction.UpdatePath);
-        var app = row.App;
-        var oldPath = app.Path;
-        var oldRuleName = app.RuleName;
+        using var working = MarkRowsWorking(rows.Select(r => r.App), RowAction.UpdatePath);
 
-        // Prefer the path resolved during refresh; re-resolve if it's missing or already moved again.
-        var newPath = row.ResolvedNewPath;
-        if (string.IsNullOrWhiteSpace(newPath) || !SafeExists(newPath))
+        var plans = new List<(ProtectedApp App, string OldPath, string OldRuleName, ProtectedApp Pending)>();
+        foreach (var row in rows)
         {
-            if (AppxPathResolver.IsPackagedPath(oldPath))
+            var app = row.App;
+            var oldPath = app.Path;
+
+            // Prefer the path resolved during refresh; re-resolve if it's missing or already moved again.
+            var newPath = row.ResolvedNewPath;
+            if (string.IsNullOrWhiteSpace(newPath) || !SafeExists(newPath))
             {
-                var moved = await _appxResolver.ResolveMovedPathsAsync(new[] { oldPath }, CancellationToken.None);
-                moved.TryGetValue(oldPath, out newPath);
+                newPath = null;
+                if (AppxPathResolver.IsPackagedPath(oldPath))
+                {
+                    var moved = await _appxResolver.ResolveMovedPathsAsync(new[] { oldPath }, CancellationToken.None);
+                    moved.TryGetValue(oldPath, out newPath);
+                }
+                else if (CliPathResolver.IsCliVersionedPath(oldPath))
+                {
+                    CliPathResolver.ResolveMovedPaths(new[] { oldPath }).TryGetValue(oldPath, out newPath);
+                }
+                else if (VsCodeExtensionPathResolver.IsVersionedExtensionPath(oldPath))
+                {
+                    VsCodeExtensionPathResolver.ResolveMovedPaths(new[] { oldPath }).TryGetValue(oldPath, out newPath);
+                }
+                else if (CodexDesktopPathResolver.IsVersionedPath(oldPath))
+                {
+                    CodexDesktopPathResolver.ResolveMovedPaths(new[] { oldPath }).TryGetValue(oldPath, out newPath);
+                }
             }
-            else if (CliPathResolver.IsCliVersionedPath(oldPath))
+
+            if (string.IsNullOrWhiteSpace(newPath))
             {
-                CliPathResolver.ResolveMovedPaths(new[] { oldPath }).TryGetValue(oldPath, out newPath);
+                var noPath = $"Не удалось определить новый путь для «{app.Name}». Возможно, программа удалена или ещё не переустановлена — защита не восстановлена.";
+                if (interactive)
+                {
+                    System.Windows.MessageBox.Show(this, noPath, "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                else
+                {
+                    FooterText.Text = noPath;
+                }
+
+                continue;
             }
-            else if (VsCodeExtensionPathResolver.IsVersionedExtensionPath(oldPath))
+
+            // Carry the new path/rule into the elevated call, but only commit to settings on success —
+            // if the user cancels UAC the firewall is untouched, so the stored path must stay as-is.
+            // Имя берётся из нового файла: у самообновляющихся программ версия зашита в FileDescription.
+            plans.Add((app, oldPath, app.RuleName, new ProtectedApp
             {
-                VsCodeExtensionPathResolver.ResolveMovedPaths(new[] { oldPath }).TryGetValue(oldPath, out newPath);
-            }
+                Name = ResolveAppName(newPath),
+                Path = newPath,
+                IdentityKey = ProtectedAppIdentity.ComputeKey(newPath),
+                RuleName = FirewallService.BuildRuleName(newPath),
+                AddedAt = app.AddedAt,
+                RulesAppliedAt = app.RulesAppliedAt
+            }));
         }
 
-        if (string.IsNullOrWhiteSpace(newPath))
+        if (plans.Count == 0)
         {
-            var noPath = $"Не удалось определить новый путь для «{app.Name}». Возможно, программа удалена или ещё не переустановлена — защита не восстановлена.";
-            if (interactive)
-            {
-                System.Windows.MessageBox.Show(this, noPath, "VPN Health Monitor", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-            else
-            {
-                FooterText.Text = noPath;
-            }
-
             await RefreshProtectedAppsAsync(logIssues: false);
-            return false;
+            return restored;
         }
 
-        var newRuleName = FirewallService.BuildRuleName(newPath);
-
-        // Имя берётся из нового файла: у самообновляющихся программ версия зашита в FileDescription,
-        // и строка, оставленная как есть, годами показывает версию, которой на диске давно нет.
-        var newName = ResolveAppName(newPath);
-
-        // Carry the new path/rule into the elevated call, but only commit to settings on success —
-        // if the user cancels UAC the firewall is untouched, so the stored path must stay as-is.
-        var pending = new ProtectedApp
-        {
-            Name = newName,
-            Path = newPath,
-            IdentityKey = ProtectedAppIdentity.ComputeKey(newPath),
-            RuleName = newRuleName,
-            AddedAt = app.AddedAt,
-            RulesAppliedAt = app.RulesAppliedAt
-        };
-
+        var names = string.Join(", ", plans.Select(p => p.App.Name));
         try
         {
             // Path updates re-create the rule, so they need the adapter list too. Ask again only when the
@@ -2759,25 +2779,58 @@ public partial class MainWindow : Window
             if (adapters is null)
             {
                 await RefreshProtectedAppsAsync(logIssues: false);
-                return false;
+                return restored;
             }
 
             SetProtectionBusyText("Собираю правила старых версий...");
             var idlePreviousVersions = await CollectIdlePreviousVersionRulesAsync();
             SetProtectionBusyText("Подтверди окно Windows (UAC)...");
-            var result = await _firewallService.UpdatePathAsync(
-                pending, oldRuleName, adapters, CancellationToken.None, idlePreviousVersions);
+            var result = await _firewallService.UpdatePathsAsync(
+                plans.Select(p => (p.Pending, p.OldRuleName)).ToList(), adapters, CancellationToken.None, idlePreviousVersions);
 
             if (result.Cancelled)
             {
-                await LogKillSwitchEventAsync("uac_cancelled", $"обновление пути отменено в UAC: {app.Name}", app);
+                await LogKillSwitchEventAsync("uac_cancelled", $"обновление пути отменено в UAC: {names}");
                 FooterText.Text = "Обновление пути отменено в UAC. Путь не изменён.";
-                return false;
+                return restored;
             }
 
-            if (!result.Success)
+            // Rule is in place — commit the new path/rule, per program: one failed file must not
+            // move the others back or leave a path in settings without its rule.
+            foreach (var plan in plans)
             {
-                await LogKillSwitchEventAsync("admin_error", $"ошибка обновления пути: {result.Error}", app);
+                var applied = result.Items.Any(i => i.State == "applied"
+                    && string.Equals(i.RuleName, plan.Pending.RuleName, StringComparison.OrdinalIgnoreCase));
+                if (!applied)
+                {
+                    await LogKillSwitchEventAsync("admin_error", $"новое правило не встало: {plan.App.Name} ({plan.Pending.Path})", plan.App);
+                    continue;
+                }
+
+                plan.App.Path = plan.Pending.Path;
+                plan.App.RuleName = plan.Pending.RuleName;
+                plan.App.Name = plan.Pending.Name;
+                plan.App.IdentityKey = plan.Pending.IdentityKey;
+                plan.App.RulesAppliedAt = DateTimeOffset.Now;
+                restored.Add(plan.App);
+                await LogKillSwitchEventAsync("path_updated",
+                    $"путь обновлён, новое правило применено, старое сохранено при наличии файла: {plan.App.Name} ({plan.OldPath} → {plan.Pending.Path})", plan.App);
+            }
+
+            if (restored.Count > 0)
+            {
+                await _settingsService.SaveAsync(_settings);
+            }
+
+            var cleaned = result.Items.Where(item => item.State == "stale_removed").ToList();
+            foreach (var item in cleaned)
+            {
+                await LogKillSwitchEventAsync("rule_removed",
+                    $"вместе с обновлением пути снято ненужное правило старой версии: {item.Path}");
+            }
+
+            if (restored.Count < plans.Count)
+            {
                 var failure = result.Error ?? "Не удалось обновить правило для нового пути.";
                 if (interactive)
                 {
@@ -2787,40 +2840,23 @@ public partial class MainWindow : Window
                 {
                     FooterText.Text = failure;
                 }
-
-                await RefreshProtectedAppsAsync(logIssues: false);
-                return false;
             }
-
-            // Rule is in place — commit the new path/rule to the persisted app.
-            app.Path = newPath;
-            app.RuleName = newRuleName;
-            app.Name = newName;
-            app.IdentityKey = pending.IdentityKey;
-            if (result.Items.Any(i => i.State == "applied"))
+            else
             {
-                app.RulesAppliedAt = DateTimeOffset.Now;
-            }
-            await _settingsService.SaveAsync(_settings);
-            await LogKillSwitchEventAsync("path_updated",
-                $"путь обновлён, новое правило применено, старое сохранено при наличии файла: {app.Name} ({oldPath} → {newPath})", app);
-
-            var cleaned = result.Items.Where(item => item.State == "stale_removed").ToList();
-            foreach (var item in cleaned)
-            {
-                await LogKillSwitchEventAsync("rule_removed",
-                    $"вместе с обновлением пути снято ненужное правило старой версии: {item.Path}");
+                FooterText.Text = (plans.Count == 1
+                        ? $"Путь «{plans[0].App.Name}» обновлён."
+                        : $"Пути обновлены: {names}.")
+                    + " Старое правило сохраняется, пока прежняя версия может работать."
+                    + (cleaned.Count > 0 ? $" Сняты ненужные правила старых версий: {cleaned.Count}." : string.Empty);
             }
 
-            FooterText.Text = $"Путь «{app.Name}» обновлён. Старое правило сохраняется, пока прежняя версия может работать."
-                + (cleaned.Count > 0 ? $" Сняты ненужные правила старых версий: {cleaned.Count}." : string.Empty);
             SetProtectionBusyText("Проверяю, что правила на месте...");
             await RefreshProtectedAppsAsync(logIssues: false);
-            return true;
+            return restored;
         }
         catch (Exception ex)
         {
-            await LogKillSwitchEventAsync("admin_error", $"исключение при обновлении пути: {ex.Message}", app);
+            await LogKillSwitchEventAsync("admin_error", $"исключение при обновлении пути: {ex.Message}");
             if (interactive)
             {
                 System.Windows.MessageBox.Show(this, ex.Message, "VPN Health Monitor",
@@ -2828,10 +2864,10 @@ public partial class MainWindow : Window
             }
             else
             {
-                FooterText.Text = $"Защита «{app.Name}» не восстановлена: {ex.Message}";
+                FooterText.Text = $"Защита не восстановлена ({names}): {ex.Message}";
             }
 
-            return false;
+            return restored;
         }
     }
 
@@ -3288,10 +3324,17 @@ public partial class MainWindow : Window
             }
         }
 
-        foreach (var (row, _) in batch.Where(c => c.Kind == AutoRepairKind.UpdatePath))
+        // Все новые версии — одним UAC: Codex при обновлении меняет пути сразу у нескольких своих .exe.
+        var pathRows = batch.Where(c => c.Kind == AutoRepairKind.UpdatePath).Select(c => c.Row).ToList();
+        if (pathRows.Count > 0)
         {
-            await LogKillSwitchEventAsync("auto_repair", $"автовосстановление: обновляю путь — {row.App.Name}", row.App);
-            (await UpdatePathForRowAsync(row, interactive: false) ? restored : failed).Add(row.App.Name);
+            await LogKillSwitchEventAsync("auto_repair",
+                $"автовосстановление: обновляю путь — {string.Join(", ", pathRows.Select(r => r.App.Name))}");
+            var updated = await UpdatePathsForRowsAsync(pathRows, interactive: false);
+            foreach (var row in pathRows)
+            {
+                (updated.Contains(row.App) ? restored : failed).Add(row.App.Name);
+            }
         }
 
         if (failed.Count > 0)

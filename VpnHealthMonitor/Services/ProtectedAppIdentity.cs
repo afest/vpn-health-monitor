@@ -33,6 +33,11 @@ public static class ProtectedAppIdentity
             return "vscode-ext:" + vscodeExtensionKey;
         }
 
+        if (CodexDesktopPathResolver.GetStableKey(value) is { } codexKey)
+        {
+            return "codex-desktop:" + codexKey;
+        }
+
         return "path:" + value.ToLowerInvariant();
     }
 

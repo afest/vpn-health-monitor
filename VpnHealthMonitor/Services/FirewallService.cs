@@ -236,16 +236,31 @@ public sealed class FirewallService
         IReadOnlyList<string> blockedAdapters,
         CancellationToken cancellationToken,
         IReadOnlyList<FirewallRuleInfo>? idlePreviousVersionRules = null)
+        => UpdatePathsAsync(new[] { (appWithNewPath, oldRuleName) }, blockedAdapters, cancellationToken, idlePreviousVersionRules);
+
+    /// <summary>
+    /// Несколько перепривязок одним запросом прав: программа обновилась целиком и сменила пути у всех
+    /// своих вспомогательных .exe — один UAC вместо UAC на каждый файл. Скрипт обрабатывает программы
+    /// независимо и отдаёт результат по каждой (по имени нового правила).
+    /// </summary>
+    public Task<FirewallActionResult> UpdatePathsAsync(
+        IReadOnlyList<(ProtectedApp AppWithNewPath, string OldRuleName)> updates,
+        IReadOnlyList<string> blockedAdapters,
+        CancellationToken cancellationToken,
+        IReadOnlyList<FirewallRuleInfo>? idlePreviousVersionRules = null)
     {
+        var touched = new HashSet<string>(
+            updates.SelectMany(u => new[] { u.OldRuleName, u.AppWithNewPath.RuleName }),
+            StringComparer.OrdinalIgnoreCase);
         var job = new
         {
             action = "update_path",
             adapters = blockedAdapters.ToArray(),
-            apps = new[] { new JobApp(appWithNewPath.Name, appWithNewPath.Path, appWithNewPath.RuleName, oldRuleName, true) },
+            apps = updates
+                .Select(u => new JobApp(u.AppWithNewPath.Name, u.AppWithNewPath.Path, u.AppWithNewPath.RuleName, u.OldRuleName, true))
+                .ToArray(),
             staleRules = (idlePreviousVersionRules ?? Array.Empty<FirewallRuleInfo>())
-                .Where(rule => !string.IsNullOrWhiteSpace(rule.Program)
-                    && !string.Equals(rule.Rule, oldRuleName, StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(rule.Rule, appWithNewPath.RuleName, StringComparison.OrdinalIgnoreCase))
+                .Where(rule => !string.IsNullOrWhiteSpace(rule.Program) && !touched.Contains(rule.Rule))
                 .Select(rule => new StaleRule(rule.Rule, rule.Program!))
                 .ToArray()
         };

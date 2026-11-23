@@ -16,6 +16,10 @@ public sealed record PreviousVersionVerdict(bool InUse, int RunningFromOldExe, b
 /// версия занята, пока жив хоть один процесс VS Code, запущенный раньше, чем появилась новая
 /// версия. «Reload Window» главный процесс не перезапускает — нужен полный перезапуск.
 /// </para>
+/// <para>
+/// То же для приложения Codex: его вспомогательные программы запускает главный процесс ChatGPT.exe,
+/// и запущенный до обновления может снова поднять их из старой папки.
+/// </para>
 /// </summary>
 public static class PreviousVersionUsage
 {
@@ -41,17 +45,29 @@ public static class PreviousVersionUsage
         return new PreviousVersionVerdict(runningFromOldExe > 0 || hostOld, runningFromOldExe, hostOld);
     }
 
-    /// <summary>Когда VS Code скачал новую версию расширения: время создания её папки. Не расширение — null.</summary>
+    /// <summary>
+    /// Когда появилась новая версия: время создания её папки (расширения VS Code или версии Codex).
+    /// Для остальных программ — null.
+    /// </summary>
     internal static DateTime? NewVersionAppearedAt(string? newerExePath)
     {
-        if (!VsCodeExtensionPathResolver.TryParse(newerExePath, out var root, out var folder, out _, out _))
+        string? dir = null;
+        if (VsCodeExtensionPathResolver.TryParse(newerExePath, out var root, out var folder, out _, out _))
+        {
+            dir = Path.Combine(root, folder);
+        }
+        else if (CodexDesktopPathResolver.GetVersionFolder(newerExePath) is { } codexFolder)
+        {
+            dir = codexFolder;
+        }
+
+        if (dir is null)
         {
             return null;
         }
 
         try
         {
-            var dir = Path.Combine(root, folder);
             return Directory.Exists(dir) ? Directory.GetCreationTime(dir) : null;
         }
         catch
@@ -60,9 +76,11 @@ public static class PreviousVersionUsage
         }
     }
 
-    /// <summary>Имя процесса VS Code, которому принадлежит папка расширений.</summary>
+    /// <summary>Имя главного процесса, который запускает эту программу: VS Code или приложение Codex.</summary>
     internal static string HostProcessName(string extensionPath)
-        => extensionPath.Contains(@"\.vscode-insiders\", StringComparison.OrdinalIgnoreCase) ? "Code - Insiders" : "Code";
+        => CodexDesktopPathResolver.IsVersionedPath(extensionPath)
+            ? "ChatGPT"
+            : extensionPath.Contains(@"\.vscode-insiders\", StringComparison.OrdinalIgnoreCase) ? "Code - Insiders" : "Code";
 
     private static IReadOnlyList<DateTime?> HostStartTimes(string extensionPath)
     {
